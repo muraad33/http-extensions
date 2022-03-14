@@ -2,7 +2,7 @@
 title: The Cache-Status HTTP Response Header Field
 abbrev: Cache-Status Header
 docname: draft-ietf-httpbis-cache-header-latest
-date: March 2022
+date: {DATE}
 category: std
 
 ipr: trust200902
@@ -14,158 +14,152 @@ keyword:
 - debugging
 - x-cache
 
-venue:
-  group: HTTP
-  type: Working Group
-  home: https://httpwg.org/
-  mail: ietf-http-wg@w3.org
-  arch: https://lists.w3.org/Archives/Public/ietf-http-wg/
-  repo: https://github.com/httpwg/http-extensions/labels/cache-header
-github-issue-label: cache-header
-
 stand_alone: yes
 smart_quotes: no
 
-entity:
-  SELF: "RFC 9211"
-
 author:
  -
+    ins: M. Nottingham
     name: Mark Nottingham
     organization: Fastly
-    postal:
-      - Prahran
+    city: Prahran
+    region: VIC
     country: Australia
     email: mnot@mnot.net
     uri: https://www.mnot.net/
 
 normative:
+  RFC2119:
   RFC8126:
-  STRUCTURED-FIELDS: RFC8941
-  HTTP: I-D.ietf-httpbis-semantics
-  HTTP-CACHING: I-D.ietf-httpbis-cache
+  RFC8941:
 
 informative:
   ENTANGLE:
-    target: https://portswigger.net/research/web-cache-entanglement
+    target: https://i.blackhat.com/USA-20/Wednesday/us-20-Kettle-Web-Cache-Entanglement-Novel-Pathways-To-Poisoning-wp.pdf
     title: "Web Cache Entanglement: Novel Pathways to Poisoning"
-    date: September 2020
+    date: 2020
     author:
     -
+      ins: J. Kettle
       name: James Kettle
       organization: PortSwigger
 
 
 --- abstract
 
-To aid debugging, HTTP caches often append header fields to a response, explaining how they handled the request in an ad hoc manner. This specification defines a standard mechanism to do so that is aligned with HTTP's caching model.
+To aid debugging, HTTP caches often append header fields to a response explaining how they handled the request. This specification codifies that practice and updates it to align with HTTP's current caching model.
 
+
+--- note_Note_to_Readers
+
+*RFC EDITOR: please remove this section before publication*
+
+Discussion of this draft takes place on the HTTP working group mailing list (ietf-http-wg@w3.org), which is archived at <https://lists.w3.org/Archives/Public/ietf-http-wg/>.
+
+Working Group information can be found at <https://httpwg.org/>; source code and issues list for this draft can be found at <https://github.com/httpwg/http-extensions/labels/cache-header>.
 
 --- middle
 
 # Introduction
 
-To aid debugging (both by humans and automated tools), HTTP caches often append header fields to a response explaining how they handled the request. Unfortunately, the semantics of these header fields are often unclear, and both the semantics and syntax used vary between implementations.
+To aid debugging, HTTP caches often append header fields to a response explaining how they handled the request. Unfortunately, the semantics of these headers are often unclear, and both the semantics and syntax used vary between implementations.
 
-This specification defines a new HTTP response header field, "Cache-Status", for this purpose with standardized syntax and semantics.
+This specification defines a new HTTP response header field, "Cache-Status" for this purpose.
 
 
 ## Notational Conventions
 
-{::boilerplate bcp14-tagged}
+The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "SHOULD NOT", "RECOMMENDED", "NOT RECOMMENDED", "MAY", and "OPTIONAL" in this document are to be interpreted as described in BCP 14 {{!RFC2119}} {{!RFC8174}} when, and only when, they appear in all capitals, as shown here.
 
-This document uses the following terminology from {{Section 3 of STRUCTURED-FIELDS}} to specify syntax and parsing: List, String, Token, Integer, and Boolean.
-
-This document also uses terminology from {{HTTP}} and {{HTTP-CACHING}}.
-
+This document uses ABNF as defined in {{!RFC5234}}.
 
 # The Cache-Status HTTP Response Header Field {#field}
 
-The Cache-Status HTTP response header field indicates how caches have handled that response and its corresponding request. The syntax of this header field conforms to {{STRUCTURED-FIELDS}}.
+The Cache-Status HTTP response header field indicates caches' handling of the request corresponding to the response it occurs within.
 
-Its value is a List. Each member of the List represents a cache that has handled the request. The first member represents the cache closest to the origin server, and the last member represents the cache closest to the user (possibly including the user agent's cache itself if it appends a value).
+Its value is a List ({{RFC8941, Section 3.1}}):
 
-Caches determine when it is appropriate to add the Cache-Status header field to a response. Some might add it to all responses, whereas others might only do so when specifically configured to, or when the request contains a header field that activates a debugging mode. See {{security}} for related security considerations.
+~~~ abnf
+Cache-Status   = sf-list
+~~~
 
-An intermediary SHOULD NOT append a Cache-Status member to responses that it generates locally, even if that intermediary contains a cache, unless the generated response is based upon a stored response (e.g., 304 (Not Modified) and 206 (Partial Content) are both based upon a stored response). For example, a proxy generating a 400 response due to a malformed request will not add a Cache-Status value, because that response was generated by the proxy, not the origin server.
+Each member of the list represents a cache that has handled the request. The first member of the list represents the cache closest to the origin server, and the last member of the list represents the cache closest to the user (possibly including the user agent's cache itself, if it appends a value).
+
+The Cache-Status header field is only applicable to responses that are generated by an origin server. An intermediary SHOULD NOT append a Cache-Status member to responses that it generates, even if that intermediary contains a cache, except when the generated response is based upon a stored response (e.g., a 304 Not Modified or 206 Partial Content).
+
+Caches determine when it is appropriate to add the Cache-Status header field to a response. Some might add it to all responses, whereas others might only do so when specifically configured to, or when the request contains a header field that activates a debugging mode.
 
 When adding a value to the Cache-Status header field, caches SHOULD preserve the existing field value, to allow debugging of the entire chain of caches handling the request.
 
-Each List member identifies the cache that inserted it, and this identifier MUST be a String or Token. Depending on the deployment, this might be a product or service name (e.g., "ExampleCache" or "Example CDN"), a hostname ("cache-3.example.com"), an IP address, or a generated string.
+Each list member identifies the cache that inserted it and MUST be a String or Token. Depending on the deployment, this might be a product or service name (e.g., ExampleCache or "Example CDN"), a hostname ("cache-3.example.com"), an IP address, or a generated string.
 
 Each member of the list can have parameters that describe that cache's handling of the request. While these parameters are OPTIONAL, caches are encouraged to provide as much information as possible.
 
-This specification defines the following parameters.
+This specification defines the following parameters:
 
+~~~ abnf
+hit          = sf-boolean
+fwd          = sf-token
+fwd-status   = sf-integer
+ttl          = sf-integer
+stored       = sf-boolean
+collapsed    = sf-boolean
+key          = sf-string
+detail       = sf-token / sf-string
+~~~
 
-## The hit Parameter
+## The hit parameter
 
-The value of "hit" is a Boolean that, when true, indicates that the request was satisfied by the cache; that is, it was not forwarded, and the response was obtained from the cache.
+"hit", when true, indicates that the request was satisfied by the cache; i.e., it was not forwarded, and the response was obtained from the cache.
 
 A response that was originally produced by the origin but was modified by the cache (for example, a 304 or 206 status code) is still considered a hit, as long as it did not go forward (e.g., for validation).
 
-A response that was in cache but not able to be used without going forward (e.g., because it was stale or partial) is not considered a hit. Note that a stale response that is used without going forward (e.g., because the origin server is not available) can be considered a hit.
+A response that was in cache but not able to be used without going forward (e.g., because it was stale, or partial) is not considered a hit. Note that a stale response that is used without going forward (e.g., because the origin server is not available) can be considered a hit.
 
 "hit" and "fwd" are exclusive; only one of them should appear on each list member.
 
-## The fwd Parameter
+## The fwd parameter
 
-"fwd", when present, indicates that the request went forward towards the origin; its value is a Token that indicates why.
+"fwd" indicates that the request went forward towards the origin, and why.
 
 The following parameter values are defined to explain why the request went forward, from most specific to least:
 
-bypass:
-: The cache was configured to not handle this request.
+* bypass - The cache was configured to not handle this request
+* method - The request method's semantics require the request to be forwarded
+* uri-miss - The cache did not contain any responses that matched the request URI
+* vary-miss - The cache contained a response that matched the request URI, but could not select a response based upon this request's headers and stored Vary headers.
+* miss - The cache did not contain any responses that could be used to satisfy this request (to be used when an implementation cannot distinguish between uri-miss and vary-miss)
+* request - The cache was able to select a fresh response for the request, but the request's semantics (e.g., Cache-Control request directives) did not allow its use
+* stale - The cache was able to select a response for the request, but it was stale
+* partial - The cache was able to select a partial response for the request, but it did not contain all of the requested ranges (or the request was for the complete response)
 
-method:
-: The request method's semantics require the request to be forwarded.
+The most specific reason that the cache is aware of SHOULD be used.
 
-uri-miss:
-: The cache did not contain any responses that matched the request URI.
+## The fwd-status parameter
 
-vary-miss:
-: The cache contained a response that matched the request URI, but it could not select a response based upon this request's header fields and stored Vary header fields.
+"fwd-status" indicates what status code the next hop server returned in response to the request. Only meaningful when "fwd" is present; if "fwd-status" is not present but "fwd" is, it defaults to the status code sent in the response.
 
-miss:
-: The cache did not contain any responses that could be used to satisfy this request (to be used when an implementation cannot distinguish between uri-miss and vary-miss).
+This parameter is useful to distinguish cases when the next hop server sends a 304 Not Modified response to a conditional request, or a 206 Partial Response because of a range request.
 
-request:
-: The cache was able to select a fresh response for the request, but the request's semantics (e.g., Cache-Control request directives) did not allow its use.
+## The ttl parameter
 
-stale:
-: The cache was able to select a response for the request, but it was stale.
+"ttl" indicates the response's remaining freshness lifetime as calculated by the cache, as an integer number of seconds, measured when the response header section is sent by the cache. This includes freshness assigned by the cache; e.g., through heuristics, local configuration, or other factors. May be negative, to indicate staleness.
 
-partial:
-: The cache was able to select a partial response for the request, but it did not contain all of the requested ranges (or the request was for the complete response).
+## The stored parameter
 
+"stored" indicates whether the cache stored the response; a true value indicates that it did. Only meaningful when fwd is present.
 
-The most specific reason known to the cache SHOULD be used, to the extent that it is possible to implement. See also {{HTTP-CACHING, Section 4}}.
+## The collapsed parameter
 
-## The fwd-status Parameter
+"collapsed" indicates whether this request was collapsed together with one or more other forward requests; if true, the response was successfully reused; if not, a new request had to be made. If not present, the request was not collapsed with others. Only meaningful when fwd is present.
 
-The value of "fwd-status" is an Integer that indicates which status code (see {{HTTP, Section 15}}) the next-hop server returned in response to the forwarded request. The fwd-status parameter is only meaningful when fwd is present. If fwd-status is not present but the fwd parameter is, it defaults to the status code sent in the response.
+## The key parameter
 
-This parameter is useful to distinguish cases when the next-hop server sends a 304 (Not Modified) response to a conditional request or a 206 (Partial Content) response because of a range request.
+"key" conveys a representation of the cache key used for the response. Note that this may be implementation-specific.
 
-## The ttl Parameter
+## The detail parameter
 
-The value of "ttl" is an Integer that indicates the response's remaining freshness lifetime (see {{HTTP-CACHING, Section 4.2.1}}) as calculated by the cache, as an integer number of seconds, measured as closely as possible to when the response header section is sent by the cache. This includes freshness assigned by the cache through, for example, heuristics (see {{HTTP-CACHING, Section 4.2.2}}), local configuration, or other factors. It may be negative, to indicate staleness.
-
-## The stored Parameter
-
-The value of "stored" is a Boolean that indicates whether the cache stored the response (see {{HTTP-CACHING, Section 3}}); a true value indicates that it did. The stored parameter is only meaningful when fwd is present.
-
-## The collapsed Parameter
-
-The value of "collapsed" is a Boolean that indicates whether this request was collapsed together with one or more other forward requests (see {{HTTP-CACHING, Section 4}}). If true, the response was successfully reused; if not, a new request had to be made. If not present, the request was not collapsed with others. The collapsed parameter is only meaningful when fwd is present.
-
-## The key Parameter
-
-The value of "key" is a String that conveys a representation of the cache key (see {{HTTP-CACHING, Section 2}}) used for the response. Note that this may be implementation specific.
-
-## The detail Parameter
-
-The value of "detail" is either a String or a Token that allows implementations to convey additional information not captured in other parameters, such as implementation-specific states or other caching-related metrics.
+"detail" allows implementations to convey additional information not captured in other parameters; for example, implementation-specific states, or other caching-related metrics.
 
 For example:
 
@@ -173,124 +167,98 @@ For example:
 Cache-Status: ExampleCache; hit; detail=MEMORY
 ~~~
 
-The semantics of a detail parameter are always specific to the cache that sent it; even if a details parameter from another cache shares the same value, it might not mean the same thing.
+The semantics of a detail parameter are always specific to the cache that sent it; even if a member of details from another cache shares the same name, it might not mean the same thing.
 
 This parameter is intentionally limited. If an implementation's developer or operator needs to convey additional information in an interoperable fashion, they are encouraged to register extension parameters (see {{register}}) or define another header field.
 
 
 # Examples
 
-The following is an example of a minimal cache hit:
+The most minimal cache hit:
 
 ~~~ http-message
 Cache-Status: ExampleCache; hit
 ~~~
 
-However, a polite cache will give some more information, e.g.:
+... but a polite cache will give some more information, e.g.:
 
 ~~~ http-message
 Cache-Status: ExampleCache; hit; ttl=376
 ~~~
 
-A stale hit just has negative freshness, as in this example:
+A stale hit just has negative freshness:
 
 ~~~ http-message
 Cache-Status: ExampleCache; hit; ttl=-412
 ~~~
 
-Whereas this is an example of a complete miss:
+Whereas a complete miss is:
 
 ~~~ http-message
 Cache-Status: ExampleCache; fwd=uri-miss
 ~~~
 
-This is an example of a miss that successfully validated on the backend server:
+A miss that successfully validated on the back-end server:
 
 ~~~ http-message
 Cache-Status: ExampleCache; fwd=stale; fwd-status=304
 ~~~
 
-This is an example of a miss that was collapsed with another request:
+A miss that was collapsed with another request:
 
 ~~~ http-message
 Cache-Status: ExampleCache; fwd=uri-miss; collapsed
 ~~~
 
-This is an example of a miss that the cache attempted to collapse, but couldn't:
+A miss that the cache attempted to collapse, but couldn't:
 
 ~~~ http-message
 Cache-Status: ExampleCache; fwd=uri-miss; collapsed=?0
 ~~~
 
-The following is an example of going through two separate layers of caching, where the cache closest to the origin responded to an earlier request with a stored response, and a second cache stored that response and later reused it to satisfy the current request:
+Going through two separate layers of caching, where the cache closest to the origin responded to an earlier request with a stored response, and a second cache stored that response and later reused it to satisfy the current request:
 
 ~~~ http-message
 Cache-Status: OriginCache; hit; ttl=1100,
               "CDN Company Here"; hit; ttl=545
 ~~~
 
-The following is an example of going through a three-layer caching system, where the closest to the origin is a reverse proxy (where the response was served from cache); the next is a forward proxy interposed by the network (where the request was forwarded because there wasn't any response cached with its URI, the request was collapsed with others, and the resulting response was stored); and the closest to the user is a browser cache (where there wasn't any response cached with the request's URI):
-
-~~~ http-message
-Cache-Status: ReverseProxyCache; hit
-Cache-Status: ForwardProxyCache; fwd=uri-miss; collapsed; stored
-Cache-Status: BrowserCache; fwd=uri-miss
-~~~
-
 
 # Defining New Cache-Status Parameters {#register}
 
-New Cache-Status parameters can be defined by registering them in the "HTTP Cache-Status" registry.
+New Cache-Status Parameters can be defined by registering them in the HTTP Cache-Status Parameters registry.
 
-Registration requests are reviewed and approved by a designated expert, per {{RFC8126, Section 4.5}}. A specification document is appreciated but not required.
+Registration requests are reviewed and approved by a Designated Expert, as per {{RFC8126, Section 4.5}}. A specification document is appreciated, but not required.
 
-The expert(s) should consider the following factors when evaluating requests:
+The Expert(s) should consider the following factors when evaluating requests:
 
 * Community feedback
-* If the value is sufficiently well defined
-* Generic parameters are preferred over vendor-specific, application-specific, or deployment-specific values. If a generic value cannot be agreed upon in the community, the parameter's name should be correspondingly specific (e.g., with a prefix that identifies the vendor, application, or deployment).
+* If the value is sufficiently well-defined
+* Generic parameters are preferred over vendor-specific, application-specific, or deployment-specific values. If a generic value cannot be agreed upon in the community, the parameter's name should be correspondingly specific (e.g., with a prefix that identifies the vendor, application or deployment).
 
 Registration requests should use the following template:
 
-Name:
-: \[a name for the Cache-Status parameter; see {{Section 3.1.2 of STRUCTURED-FIELDS}} for syntactic requirements\]
+* Name: \[a name for the Cache-Status Parameter that matches key\]
+* Description: \[a description of the parameter semantics and value\]
+* Reference: \[to a specification defining this parameter\]
 
-Description:
-: \[a description of the parameter semantics and value\]
-
-Reference:
-: \[to a specification defining this parameter, if available\]
-
-See the registry at [](https://www.iana.org/assignments/http-cache-status){:brackets="angle"} for details on where to send registration requests.
+See the registry at <https://iana.org/assignments/http-cache-status> for details on where to send registration requests.
 
 
 # IANA Considerations
 
-IANA has created the "HTTP Cache-Status" registry at [](https://iana.org/assignments/http-cache-status){:brackets="angle"} and populated it with the types defined in {{field}}; see {{register}} for its associated procedures.
-
-IANA has added the following entry in the "Hypertext Transfer Protocol (HTTP) Field Name Registry" defined in {{HTTP, Section 18.4}}:
-
-Field name:
-: Cache-Status
-
-Status:
-: permanent
-
-Reference:
-: {{&SELF}}
+Upon publication, please create the HTTP Cache-Status Parameters registry at <https://iana.org/assignments/http-cache-status> and populate it with the types defined in {{field}}; see {{register}} for its associated procedures.
 
 
-# Security Considerations {#security}
+# Security Considerations
 
-Attackers can use the information in Cache-Status to probe the behavior of the cache (and other components) and infer the activity of those using the cache. The Cache-Status header field may not create these risks on its own, but it can assist attackers in exploiting them.
+Attackers can use the information in Cache-Status to probe the behaviour of the cache (and other components), and infer the activity of those using the cache. The Cache-Status header field may not create these risks on its own, but can assist attackers in exploiting them.
 
-For example, knowing if a cache has stored a response can help an attacker execute a timing attack on sensitive data.
+For example, knowing if a cache has stored a response can help an attacker execute a timing attack on sensitive data. Exposing the cache key can help an attacker understand modifications to the cache key, which may assist cache poisoning attacks. See {{ENTANGLE}} for details.
 
-Additionally, exposing the cache key can help an attacker understand modifications to the cache key, which may assist cache poisoning attacks. See {{ENTANGLE}} for details.
+The underlying risks can be mitigated with a variety of techniques (e.g., use of encryption and authentication; avoiding the inclusion of attacker-controlled data in the cache key), depending on their exact nature.
 
-The underlying risks can be mitigated with a variety of techniques (e.g., using encryption and authentication and avoiding the inclusion of attacker-controlled data in the cache key), depending on their exact nature. Note that merely obfuscating the key does not mitigate this risk.
-
-To avoid assisting such attacks, the Cache-Status header field can be omitted, only sent when the client is authorized to receive it, or sent with sensitive information (e.g., the key parameter) only when the client is authorized.
+To avoid assisting such attacks, the Cache-Status header field can be omitted, only sent when the client is authorized to receive it, or only send sensitive information (e.g., the key parameter) when the client is authorized.
 
 
 --- back
