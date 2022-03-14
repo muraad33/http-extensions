@@ -1,6 +1,5 @@
 ---
-title: Digest Headers
-abbrev:
+title: Digest Fields
 docname: draft-ietf-httpbis-digest-headers-latest
 category: std
 obsoletes: 3230
@@ -13,6 +12,15 @@ keyword: Digest
 stand_alone: yes
 smart_quotes: no
 pi: [toc, tocindent, sortrefs, symrefs, strict, compact, comments, inline, docmapping]
+
+venue:
+  group: HTTP
+  type: Working Group
+  home: https://httpwg.org/
+  mail: ietf-http-wg@w3.org
+  arch: https://lists.w3.org/Archives/Public/ietf-http-wg/
+  repo: https://github.com/httpwg/http-extensions/labels/digest-headers
+github-issue-label: digest-headers
 
 author:
  -
@@ -32,14 +40,10 @@ normative:
   RFC3174:
   RFC1950:
   RFC3230:
-  RFC3309:
-  RFC2119:
-  RFC5843:
   RFC4648:
   RFC5234:
   RFC6234:
   RFC7405:
-  RFC8174:
   UNIX:
     title: The Single UNIX Specification, Version 2 - 6 Vol Set for UNIX 98
     author:
@@ -68,495 +72,661 @@ normative:
          org: Nanyang Technological University, Singapore; Temasek Laboratories, Singapore
     date: 2020-01-05
     target: https://eprint.iacr.org/2020/014.pdf
+  SEMANTICS: I-D.ietf-httpbis-semantics
 
 informative:
   RFC2818:
-  RFC7231:
-  RFC7396:
-  SRI:
-    title: "Subresource Integrity"
-    date: 2016-06-23
-    author:
-      - ins: D. Akhawe
-      - ins: F. Braun
-      - ins: F. Marier
-      - ins: J. Weinberger
-    seriesinfo:
-      W3C Recommendation: REC-SRI-20160623
-    target: https://www.w3.org/TR/2016/REC-SRI-20160623/
+  HTTP11: I-D.ietf-httpbis-messaging
+  PATCH: RFC5789
+  NO-MD5: RFC6151
+  NO-SHA: RFC6194
 
 --- abstract
 
-This document defines the HTTP Digest and Want-Digest fields, thus allowing
-client and server to negotiate an integrity checksum of the exchanged resource
-representation data.
+This document defines HTTP fields that support integrity digests. The
+Representation-Digest field can be used for the integrity of HTTP
+representations. The Content-Digest field can be used for the integrity of
+HTTP message content. Want-Representation-Digest and Want-Content-Digest can be
+used to indicate a sender's interest and preferences for receiving the respective
+Integrity fields.
 
-This document obsoletes RFC 3230. It replaces the term "instance" with
-"representation", which makes it consistent with the HTTP Semantic and Context
-defined in draft-ietf-httpbis-semantics.
-
-
---- note_Note_to_Readers
-
-*RFC EDITOR: please remove this section before publication*
-
-Discussion of this draft takes place on the HTTP working group mailing list
-(ietf-http-wg@w3.org), which is archived at
-<https://lists.w3.org/Archives/Public/ietf-http-wg/>.
-
-The source code and issues list for this draft can be found at
-<https://github.com/httpwg/http-extensions>.
+This document obsoletes RFC 3230 and the Digest and Want-Digest HTTP
+fields.
 
 
 --- middle
 
 # Introduction
 
-The core specification of HTTP does not define a means to protect the integrity
-of resources. When HTTP messages are transferred between endpoints, the protocol
-might choose to make use of features of the lower layer in order to provide some
-integrity protection; for instance TCP checksums or TLS records [RFC2818].
+HTTP does not define the means to protect the data integrity of representations
+or content. When HTTP messages are transferred between endpoints, lower layer
+features or properties such as TCP checksums or TLS records [RFC2818] can provide
+some integrity protection. However, transport-oriented integrity provides a
+limited utility because it is opaque to the application layer and only covers
+the extent of a single connection. HTTP messages often travel over a chain of
+separate connections, in between connections there is a possibility for
+unintended or malicious data corruption. An HTTP integrity mechanism can provide
+the means for endpoints, or applications using HTTP, to detect data corruption
+and make a choice about how to act on it. An example use case is to aid
+fault detection and diagnosis across system boundaries.
 
-However, there are cases where relying on this alone is insufficient. An
-HTTP-level integrity mechanism that operates independent of transfer can be used
-to detect programming errors and/or corruption of data in flight or at rest, be used across
-multiple hops in order to provide end-to-end integrity guarantees, can aid fault
-diagnosis across hops and system boundaries, and can be used to validate
-integrity when reconstructing a resource fetched using different HTTP
-connections.
+This document defines two digest integrity mechanisms for HTTP.
+First, representation data integrity, which acts on representation data ({{Section 3.2
+of SEMANTICS}}). This supports advanced use cases such as validating the
+integrity of a resource that was reconstructed from parts retrieved using
+multiple requests or connections.
+Second, content integrity, which acts on conveyed content ({{Section 6.4 of
+SEMANTICS}}).
 
-This document defines a mechanism that acts on HTTP representation-data. It can
-be combined with other mechanisms that protect representation-metadata, such as
-digital signatures, in order to protect the desired parts of an HTTP exchange in
-whole or in part.
+This document obsoletes RFC 3230 and therefore the Digest and Want-Digest HTTP
+fields; see {{obsolete-3230}}.
 
-## A Brief History of HTTP Integrity Fields {#history}
 
-The Content-MD5 header field was originally introduced to provide integrity, but
-HTTP/1.1 ([RFC7231], Appendix B) obsoleted it:
+## Document Structure
 
-  > The Content-MD5 header field has been removed because it was
-  > inconsistently implemented with respect to partial responses.
+This document is structured as follows:
 
-[RFC3230] provided a more flexible solution introducing the concept of
-"instance", and the fields `Digest` and `Want-Digest`.
+- {{representation-digest}} defines the Representation-Digest request and response header and trailer field,
+- {{content-digest}} defines the Content-Digest request and response header and trailer field,
+- {{want-fields}} defines the Want-Representation-Digest and Want-Content-Digest request and response header and
+  trailer field,
+- {{algorithms}} describes algorithms and their relation to the fields defined in this document,
+- {{state-changing-requests}} details computing representation digests,
+- {{examples-unsolicited}} and {{examples-solicited}} provide examples of using
+  Representation-Digest and Want-Representation-Digest.
 
-## This Proposal
+## Concept Overview
 
-The concept of `selected representation` defined in Section 3.2 of
-{{!SEMANTICS=I-D.ietf-httpbis-semantics}} makes [RFC3230] definitions inconsistent with
-current HTTP semantics. This document updates the `Digest` and `Want-Digest`
-field definitions to align with {{SEMANTICS}} concepts.
+The HTTP fields defined in this document can be used for HTTP integrity. Senders
+choose a hashing algorithm and calculate a digest from an input related to the
+HTTP message, the algorithm identifier and digest are transmitted in an HTTP
+field. Receivers can validate the digest for integrity purposes. Hashing
+algorithms are registered in the "Hash Algorithms for HTTP Digest Fields" (see
+{{algorithms}}).
 
-Basing `Digest` on the selected representation makes it straightforward to
-apply it to use-cases where the transferred data does require some sort of
-manipulation to be considered a representation, or conveys a partial
-representation of a resource eg. Range Requests (see Section 14.2 of
-{{SEMANTICS}}).
+Selecting the data on which digests are calculated depends on the use case of
+HTTP messages. This document provides different headers for HTTP representation
+data and HTTP content.
 
-This document replaces [RFC3230] to better align with {{SEMANTICS}} and to
-provide more detailed description of `Digest` usage in request and response
-cases. Changes are intended to be semantically compatible with existing
-implementations but note that negotiation of `Content-MD5` is deprecated
-{{deprecate-contentMD5}}, `Digest` field parameters are obsoleted
-{{obsolete-parameters}}, "md5" and "sha" digest-algorithms are obsoleted
-{{broken-algorithms}} and the "adler32" algorithm is deprecated
-{{deprecated-algorithms}}.
+This document defines the `Representation-Digest` request and response header
+and trailer field ({{representation-digest}}) that contains a digest value
+computed by applying a hashing algorithm to "selected representation data"
+({{Section 3.2 of SEMANTICS}}). Basing `Representation-Digest` on the selected
+representation makes it straightforward to apply it to use-cases where the
+transferred data requires some sort of manipulation to be considered a
+representation or conveys a partial representation of a resource, such as Range
+Requests (see {{Section 14.2 of SEMANTICS}}).
 
-The value of `Digest` is calculated on selected representation, which is tied to
-the value contained in any `Content-Encoding` or `Content-Type` header fields.
-Therefore, a given resource may have multiple different digest values.
+There are use-cases where a simple digest of the HTTP content bytes is
+required. The `Content-Digest` request and response header and trailer field is
+defined to support digests of content ({{Section 3.2 of SEMANTICS}}); see
+{{content-digest}}.
 
-To allow both parties to exchange a Digest of a representation with no content
-codings (see Section 8.4.1 of {{SEMANTICS}}) two more digest-algorithms
-are added ("id-sha-256" and "id-sha-512").
+`Representation-Digest` and `Content-Digest` support hashing algorithm agility.
+The `Want-Representation-Digest` and `Want-Content-Digest` fields allows
+endpoints to express interest in `Representation-Digest` and `Content-Digest`
+respectively, and preference of algorithms in either.
 
-## Goals
+`Representation-Digest` and `Content-Digest` are collectively termed
+Integrity fields.
+`Want-Representation-Digest` and `Want-Content-Digest`are
+collectively termed Integrity preference fields.
 
-The goals of this proposal are:
+Integrity fields are tied to the `Content-Encoding`
+and `Content-Type` header fields. Therefore, a given resource may have multiple
+different digest values when transferred with HTTP.
 
-   1. Digest coverage for either the resource's `representation data` or
-      `selected representation data` communicated via HTTP.
+Integrity fields do not provide integrity for
+HTTP messages or fields. However, they can be combined with other mechanisms that
+protect metadata, such as digital signatures, in order to protect
+the phases of an HTTP exchange in whole or in part.
 
-   2. Support for multiple digest-algorithms.
+This specification does not define means for authentication, authorization or privacy.
 
-   3. Negotiation of the use of digests.
+## Obsoleting RFC 3230 {#obsolete-3230}
 
-The goals do not include:
+[RFC3230] defined the `Digest` and `Want-Digest` HTTP fields for HTTP integrity.
+It also coined the term "instance" and "instance manipulation" in order to
+explain concepts that are now more universally defined, and implemented, as HTTP
+semantics such as "selected representation data" ({{Section 3.2 of SEMANTICS}}).
 
-  HTTP message integrity:
-  : Digest mechanisms do not cover the full HTTP message
-    nor its semantic, as representation metadata is not included in the
-    checksum.
+Experience has shown that implementations of [RFC3230] have interpreted the
+meaning of "instance" inconsistently, leading to interoperability issues. The
+most common mistake being the calculation of the digest using (what we now call)
+message content, rather than using (what we now call) representation data as was
+originally intended. Interestingly, time has also shown that a digest of
+message content can be beneficial for some use cases. So it is difficult to
+detect if non-conformance to [RFC3230] is intentional or unintentional.
 
-  HTTP field integrity:
-  : Digest mechanisms cover only representation and selected
-    representation data, and do not protect the integrity of associated
-    representation metadata or other message fields.
-
-  Authentication:
-  : Digest mechanisms do not support authentication
-    of the source of a digest, message or anything else. These mechanisms,
-    therefore, are not a sufficient defense against many kinds of malicious
-    attacks.
-
-  Privacy:
-  : Digest mechanisms do not provide message privacy.
-
-  Authorization:
-  : Digest mechanisms do not support authorization
-    or other kinds of access controls.
+In order to address potential inconsistencies and ambiguity across
+implementations of `Digest` and `Want-Digest`, this document obsoletes
+[RFC3230]. The Integrity fields ({{representation-digest}} and
+{{content-digest}}) and Integrity preference fields ({{want-fields}})
+defined in this document are better aligned with current HTTP semantics and
+have names that more clearly articulate the intended usages.
 
 
 ## Notational Conventions
-{::boilerplate bcp14}
+{::boilerplate bcp14-tagged}
 
 This document uses the Augmented BNF defined in [RFC5234] and updated by
-[RFC7405] along with the "#rule" extension defined in Section 5.6.1 of
-{{SEMANTICS}}.
+[RFC7405].
+
+This document uses the Boolean, Byte Sequence, 
+Dictionary, Integer and List types from
+{{!STRUCTURED-FIELDS=RFC8941}} along with
+the sf-dictionary and sf-list ABNF rules.
 
 The definitions "representation", "selected representation", "representation
-data", "representation metadata", and "content" in this document are to be
+data", "representation metadata", "user agent" and "content" in this document are to be
 interpreted as described in {{SEMANTICS}}.
 
-Algorithm names respect the casing used in their definition document (eg. SHA-1, CRC32c)
-whereas digest-algorithm tokens are quoted (eg. "sha", "crc32c").
+Hashing algorithm names respect the casing used in their definition document (e.g. SHA-1, CRC32c)
+whereas hashing algorithm keys are quoted (e.g. "sha", "crc32c").
 
-# Representation Digest {#representation-digest}
+The term "checksum" describes the output of the application of an algorithm
+to a sequence of bytes,
+whereas "digest" is only used in relation to the value contained in the fields.
 
-The representation digest is an integrity mechanism for HTTP resources
-which uses a checksum  that is calculated independently of the content
-(see Section 6.4 of {{SEMANTICS}}).
-It uses the representation data (see Section 8.1 of {{SEMANTICS}}),
-that can be fully or partially contained in the content, or not contained at all:
+Integrity fields: collective term for `Representation-Digest` and `Content-Digest`
 
-~~~
-   representation-data := Content-Encoding( Content-Type( bits ) )
-~~~
+Integrity preference fields: collective term for `Want-Representation-Digest` and `Want-Content-Digest`
 
-This takes into account the effect of the HTTP semantics on the messages;
-for example, the content can be affected by Range Requests or methods such as HEAD,
-while the way the content is transferred "on the wire" is dependent on other
-transformations (e.g. transfer codings for HTTP/1.1 - see Section 6.1 of
-{{?HTTP11=I-D.ietf-httpbis-messaging}}). To help illustrate how such things affect `Digest`,
+# The Representation-Digest Field {#representation-digest}
+
+The `Representation-Digest` HTTP field can be used in requests and responses to
+communicate digests that are calculated using a hashing algorithm applied to
+the entire "selected representation data" (see {{Section 8.1 of SEMANTICS}}).
+
+Representations take into account the effect of the HTTP semantics on
+messages. For example, the content can be affected by Range Requests or methods
+such as HEAD, while the way the content is transferred "on the wire" is
+dependent on other transformations (e.g. transfer codings for HTTP/1.1 - see
+{{Section 6.1 of HTTP11}}). To help illustrate HTTP representation concepts,
 several examples are provided in {{resource-representation}}.
 
-A representation digest consists of
-the value of a checksum computed on the entire selected `representation data`
-(see Section 8.1 of {{SEMANTICS}}) of a resource identified according to Section 6.4.2 of {{SEMANTICS}}
-together with an indication of the algorithm used:
+When a message has no "representation data" it is still possible to assert that no
+"representation data" was sent by computing the digest on an empty
+string (see {{usage-in-signatures}}).
+
+`Representation-Digest` is a Structured Fields `Dictionary` (see {{Section 3.2 of
+STRUCTURED-FIELDS}}) where:
+
+* keys convey the hashing algorithm (see {{algorithms}})
+  used to compute the digest;
+* values MUST be of type `Byte Sequence`,
+  which contain the output of the digest calculation.
 
 ~~~ abnf
-   representation-data-digest = digest-algorithm "="
-                                <encoded digest output>
+Representation-Digest   = sf-dictionary
 ~~~
 
-When a message has no representation data
-it is still possible to assert that no representation data was sent
-computing the representation digest on an empty string
-(see {{usage-in-signatures}}).
-
-The checksum is computed using one of the digest-algorithms listed in {{algorithms}}
-and then encoded in the associated format.
-
-The example below shows the  "sha-256" digest-algorithm that uses base64 encoding.
-
-~~~ example
-   sha-256=X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=
-~~~
-
-# The Digest Field {#digest}
-
-The `Digest` field contains a comma-separated list of one or more representation digest values as
-defined in {{representation-digest}}. It can be used in both requests and
-responses.
-
-~~~ abnf
-   Digest = 1#representation-data-digest
-~~~
 
 For example:
 
 ~~~ http-message
-Digest: id-sha-512=WZDPaVn/7XgHaAy8pmojAkGWoRx2UFChF41A2svX+TaPm
-                   AbwAgBWnrIiYllu7BNNyealdVLvRwE\nmTHWXvJwew==
+NOTE: '\' line wrapping per RFC 8792
+
+Representation-Digest: \
+  sha-512=:WZDPaVn/7XgHaAy8pmojAkGWoRx2UFChF41A2svX+TaPm+AbwAgBWnrI\
+  iYllu7BNNyealdVLvRwEmTHWXvJwew==:
 ~~~
 
-The relationship between `Content-Location` (see Section 8.7 of
-{{SEMANTICS}}) and `Digest` is demonstrated in
-{{post-not-request-uri}}. A comprehensive set of examples showing the impacts of
-representation metadata, payload transformations and HTTP methods on Digest is
-provided in {{examples-unsolicited}} and {{examples-solicited}}.
-
-A `Digest` field MAY contain multiple representation-data-digest values.
-For example, a server may provide representation-data-digest values using different algorithms,
-allowing it to support a population of clients with different evolving capabilities;
-this is particularly useful in support of transitioning away
-from weaker algorithms should the need arise (see {{algorithm-agility}}).
+The `Dictionary` type can be used, for example, to attach multiple digests
+calculated using different hashing algorithms in order to support a population
+of endpoints with different or evolving capabilities. Such an approach could
+support transitions away from weaker algorithms (see {{sec-agility}}).
 
 ~~~ http-message
-Digest: sha-256=4REjxQ4yrqUVicfSKYNO/cF9zNj5ANbzgDZt3/h3Qxo=,
-        id-sha-256=X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=
+NOTE: '\' line wrapping per RFC 8792
+
+Representation-Digest: \
+  sha-256=:4REjxQ4yrqUVicfSKYNO/cF9zNj5ANbzgDZt3/h3Qxo=:,\
+  sha-512=:WZDPaVn/7XgHaAy8pmojAkGWoRx2UFChF41A2svX+TaPm+AbwAgBWnrI\
+  iYllu7BNNyealdVLvRwEmTHWXvJwew==:
 ~~~
 
-A recipient MAY ignore any or all of the representation-data-digests in a Digest
-field. This allows the recipient to choose which digest-algorithm(s) to use for
-validation instead of verifying every received representation-data-digest.
+A recipient MAY ignore any or all digests.
+This allows the recipient to choose which hashing algorithm(s) to use for
+validation instead of verifying every digest.
 
-A sender MAY send a representation-data-digest using a digest-algorithm without
-knowing whether the recipient supports the digest-algorithm, or even knowing
-that the recipient will ignore it.
+A sender MAY send a digest without knowing whether the
+recipient supports a given hashing algorithm, or even knowing that the recipient
+will ignore it.
 
-`Digest` can be sent in a trailer section. When an incremental digest-algorithm
-is used, the sender and the receiver can dynamically compute the digest value
-while streaming the content.
+`Representation-Digest` can be sent in a trailer section.
+In this case,
+`Representation-Digest` MAY be merged into the header section; see {{Section 6.5.1 of SEMANTICS}}.
 
-# The Want-Digest Field {#want-digest}
+## Using Representation-Digest in State-Changing Requests {#state-changing-requests}
 
-The `Want-Digest` field indicates the sender's desire to receive a representation
-digest on messages associated with the request URI and representation metadata.
-It can be used in both requests and responses.
-
-~~~
-   Want-Digest = 1#want-digest-value
-   want-digest-value = digest-algorithm [ ";" "q" "=" qvalue]
-   qvalue = ( "0"  [ "."  0*1DIGIT ] ) /
-            ( "1"  [ "."  0*1( "0" ) ] )
-~~~
-
-If a digest-algorithm is not accompanied by a "qvalue" (see Section 12.4.2 of{{SEMANTICS}}),
-it is treated as if its associated "qvalue" were 1.0.
-
-The sender is willing to accept a digest-algorithm if and only if it is listed
-in a `Want-Digest` field of a message, and its "qvalue" is non-zero.
-
-If multiple acceptable digest-algorithm values are given, the sender's preferred
-digest-algorithm is the one (or ones) with the highest "qvalue".
-
-Two examples of its use are:
-
-~~~ http-message
-Want-Digest: sha-256
-Want-Digest: sha-512;q=0.3, sha-256;q=1, unixsum;q=0
-~~~
-
-# Digest Algorithm Values {#algorithms}
-
-Digest-algorithm values are used to indicate a specific digest computation.
-
-~~~
-   digest-algorithm = token
-~~~
-
-All digest-algorithm values are case-insensitive
-but lower case is preferred.
-
-The Internet Assigned Numbers Authority (IANA) acts as a registry for
-digest-algorithm values.
-The registry contains the tokens listed below.
-
-Some digest-algorithms, although registered, rely on vulnerable algorithms
-and MUST not be used:
-
-- "md5", see [CMU-836068] and {{?NO-MD5=RFC6151}};
-- "sha", see [IACR-2020-014] and {{?NO-SHA1=RFC6194}}.
-
-See the references above for further information.
-
-
-  {: vspace="0"}
-  sha-256
-  : * Description: The SHA-256 algorithm [RFC6234].  The output of
-      this algorithm is encoded using the base64 encoding [RFC4648].
-    * Reference: [RFC6234], [RFC4648], this document.
-    * Status: standard
-
-  sha-512
-  : * Description: The SHA-512 algorithm [RFC6234].  The output of
-      this algorithm is encoded using the base64 encoding [RFC4648].
-    * Reference: [RFC6234], [RFC4648], this document.
-    * Status: standard
-
-  md5
-  : * Description: The MD5 algorithm, as specified in [RFC1321].
-      The output of this algorithm is encoded using the
-      base64 encoding  [RFC4648].
-      This digest-algorithm MUST NOT be used as it's now vulnerable
-      to collision attacks. See {{NO-MD5}} and [CMU-836068].
-    * Reference: [RFC1321], [RFC4648], this document.
-    * Status: deprecated
-
-  sha
-  : * Description:  The SHA-1 algorithm [RFC3174].  The output of this
-      algorithm is encoded using the base64 encoding  [RFC4648].
-      This digest-algorithm MUST NOT be used as it's now vulnerable
-      to collision attacks. See {{NO-SHA1}} and [IACR-2020-014].
-    * Reference: [RFC3174], [RFC6234], [RFC4648], this document.
-    * Status: deprecated
-
-  unixsum
-  : * Description: The algorithm computed by the UNIX "sum" command,
-      as defined by the Single UNIX Specification,
-      Version 2 [UNIX].  The output of this algorithm is an
-      ASCII decimal-digit string representing the 16-bit
-      checksum, which is the first word of the output of
-      the UNIX "sum" command.
-    * Reference: [UNIX], this document.
-    * Status: standard
-
-  unixcksum
-  : * Description: The algorithm computed by the UNIX "cksum" command,
-      as defined by the Single UNIX Specification,
-      Version 2 [UNIX].  The output of this algorithm is an
-      ASCII digit string representing the 32-bit CRC,
-      which is the first word of the output of the UNIX
-      "cksum" command.
-    * Reference: [UNIX], this document.
-    * Status: standard
-
-To allow sender and recipient to provide a checksum which is independent from
-`Content-Encoding`, the following additional digest-algorithms are defined:
-
-  {: vspace="0"}
-  id-sha-512
-  : * Description: The sha-512 digest of the representation-data of the resource when no
-    content coding is applied
-    * Reference: [RFC6234], [RFC4648], this document.
-    * Status: standard
-
-  id-sha-256
-  : * Description: The sha-256 digest of the representation-data of the resource when no
-      content coding is applied
-    * Reference: [RFC6234], [RFC4648], this document.
-    * Status: standard
-
-If other digest-algorithm values are defined, the associated encoding MUST
-either be represented as a quoted string or MUST NOT include ";" or "," in the
-character sets used for the encoding.
-
-
-# Use of Digest when acting on resources {#acting-on-resources}
-
-POST and PATCH requests can appear to convey partial representations but are
-semantically acting on resources. The enclosed representation, including its
-metadata, refers to that action.
-
-In these requests the representation digest MUST be computed on the
-representation-data of that action.
+When the representation enclosed in a state-changing request
+does not describe the target resource,
+the representation digest MUST be computed on the
+representation data.
 This is the only possible choice because representation digest requires complete
 representation metadata (see {{representation-digest}}).
 
 In responses,
 
 - if the representation describes the status of the request,
-  `Digest` MUST be computed on the enclosed representation
-   (see {{post-referencing-action}} );
+  `Representation-Digest` MUST be computed on the enclosed representation
+   (see {{post-referencing-status}} );
 
 - if there is a referenced resource
-  `Digest` MUST be computed on the selected representation of the referenced resource
+  `Representation-Digest` MUST be computed on the selected representation of the referenced resource
    even if that is different from the target resource.
-   That might or might not result in computing `Digest` on the enclosed representation.
+   That might or might not result in computing `Representation-Digest` on the enclosed representation.
 
-The latter case might be done according to the HTTP semantics of the given
-method, for example using the `Content-Location` header field.
-In contrast, the `Location` header field does not affect `Digest` because
+The latter case is done according to the HTTP semantics of the given
+method, for example using the `Content-Location` header field (see {{Section 8.7 of
+SEMANTICS}}).
+In contrast, the `Location` header field does not affect `Representation-Digest` because
 it is not representation metadata.
 
-## Digest and PATCH
-
-In PATCH requests, the representation digest MUST be computed on the patch document
+For example, in `PATCH` requests, the representation digest
+will be computed on the patch document
 because the representation metadata refers to the patch document and not
-to the target resource (see Section 2 of {{?PATCH=RFC5789}}).
-
-In PATCH responses, the representation digest MUST be computed on the selected
+to the target resource (see {{Section 2 of PATCH}}).
+In responses, instead, the representation digest will be computed on the selected
 representation of the patched resource.
 
-`Digest` usage with PATCH is thus very similar to POST, but with the
-resource's own semantic partly implied by the method and by the patch document.
+## Representation-Digest and Content-Location in Responses {#digest-and-content-location}
 
-# Deprecate Negotiation of Content-MD5 {#deprecate-contentMD5}
-
-This RFC deprecates the negotiation of Content-MD5 as it has been obsoleted by
-[RFC7231].
-The `contentMD5` token defined in Section 5 of [RFC3230] MUST NOT be used as a digest-algorithm.
-
-# Obsolete Digest Field Parameters {#obsolete-parameters}
-
-Section 4.1.1 and 4.2 of [RFC3230] defined field parameters. This document
-obsoletes the usage of parameters with `Digest` because this feature has not
-been widely deployed and complicates field-value processing.
-
-[RFC3230] intended field parameters to provide a common way to attach additional
-information to a representation-data-digest. However, if parameters are used as
-an input to validate the checksum, an attacker could alter them to steer the
-validation behavior.
-
-A digest-algorithm can still be parameterized by defining its own way to encode parameters into the
-representation-data-digest, in such a way as to mitigate security risks related to its computation.
+When a state-changing method returns the `Content-Location` header field, the
+enclosed representation refers to the resource identified by its value and
+`Representation-Digest` is computed accordingly.
+An example is given in {{post-not-request-uri}}.
 
 
-# Relationship to Subresource Integrity (SRI)
+# The Content-Digest Field {#content-digest}
 
-Subresource Integrity [SRI] is an integrity mechanism that shares some
-similarities to the present document's mechanism. However, there are differences
-in motivating factors, threat model and specification of integrity digest
-generation, signalling and validation.
+The `Content-Digest` HTTP field can be used in requests and responses to
+communicate digests that are calculated using a hashing algorithm applied to
+the actual message content (see {{Section 6.4 of SEMANTICS}}). It is a
+Structured Fields Dictionary (see {{Section 3.2 of STRUCTURED-FIELDS}})
+where:
 
-SRI allows a first-party authority to declare an integrity assertion on a
-resource served by a first or third party authority. This is done via the
-`integrity` attribute that can be added to `script` or `link` HTML elements.
-Therefore, the integrity assertion is always made out-of-band to the resource
-fetch. In contrast, the `Digest` field is supplied in-band alongside the
-selected representation, meaning that an authority can only declare an integrity
-assertion for itself. Methods to improve the security properties of
-representation digests are presented in {{security-considerations}}. This
-contrast is interesting because on one hand self-assertion is less likely to be
-affected by coordination problems such as the first-party holding stale
-information about the third party, but on the other hand the self-assertion is
-only as trustworthy as the authority that provided it.
+* keys convey the hashing algorithm (see {{algorithms}})
+  used to compute the digest;
+* values MUST be `Byte Sequences` ({{Section 3.3.5 of STRUCTURED-FIELDS}})
+  containing the output of the digest calculation.
 
-The SRI `integrity` attribute contains a cryptographic hash algorithm and digest
-value which is similar to `representation-data-digest` (see
-{{representation-digest}}). The major differences are in serialization format.
+~~~ abnf
+Content-Digest   = sf-dictionary
+~~~
 
-SRI does not specify handling of partial representation data (e.g. Range
-requests). In contrast, this document specifies handling in terms that are fully
-compatible with core HTTP concepts (an example is provided in
-{{server-returns-partial-representation-data}}).
+For example:
 
-SRI specifies strong requirements on the selection of algorithm for generation
-and validation of digests. In contrast, the requirements in this document are
-weaker.
+~~~ http-message
+NOTE: '\' line wrapping per RFC 8792
 
-SRI defines no method for a client to declare an integrity assertion on
-resources it transfers to a server. In contrast, the `Digest` field can
-appear on requests.
+Content-Digest: \
+  sha-512=:WZDPaVn/7XgHaAy8pmojAkGWoRx2UFChF41A2svX+TaPm+AbwAgBWnrI\
+  iYllu7BNNyealdVLvRwEmTHWXvJwew==:
+~~~
 
-## Supporting Both SRI and Representation Digest
+The `Dictionary` type can be used, for example, to attach multiple digests
+calculated using different hashing algorithms in order to support a population
+of endpoints with different or evolving capabilities. Such an approach could
+support transitions away from weaker algorithms (see {{sec-agility}}).
 
-The SRI and Representation Digest mechanisms are different and complementary but
-one is not capable of replacing the other because they have different
-threat, security and implementation properties.
+~~~ http-message
+NOTE: '\' line wrapping per RFC 8792
 
-A user agent that supports both mechanisms is expected to apply the rules
-specified for each but since the two mechanisms are independent, the ordering is
-not important. However, a user agent supporting both could benefit from
-performing representation digest validation first because it does not always
-require a conversion into identity encoding.
+Representation-Digest: \
+  sha-256=:4REjxQ4yrqUVicfSKYNO/cF9zNj5ANbzgDZt3/h3Qxo=:,\
+  sha-512=:WZDPaVn/7XgHaAy8pmojAkGWoRx2UFChF41A2svX+TaPm+AbwAgBWnrI\
+  iYllu7BNNyealdVLvRwEmTHWXvJwew==:
+~~~
 
-A user agent supporting both mechanisms:
- - can legitimately ignore `Digest` when using SRI, because
-   {{digest}} specifies that
-   "a recipient MAY ignore any or all of the representation-data-digests";
- - enforce both `Digest` and SRI: in this case it can be useful to provide
-   enough information to identify whether the mismatch happened at the `Digest`
-   or the SRI level.
+A recipient MAY ignore any or all digests.
+This allows the recipient to choose which hashing algorithm(s) to use for
+validation instead of verifying every digest.
+
+A sender MAY send a digest without
+knowing whether the recipient supports a given hashing algorithm, or even knowing
+that the recipient will ignore it.
+
+`Content-Digest` can be sent in a trailer section.
+In this case,
+`Content-Digest` MAY be merged into the header section; see {{Section 6.5.1 of SEMANTICS}}.
+
+# Integrity preference fields  {#want-fields}
+
+Senders can indicate their interest in Integrity fields and hashing algorithm
+preferences using the
+`Want-Representation-Digest` or `Want-Content-Digest` fields. These can be used in both
+requests and responses.
+
+`Want-Representation-Digest` indicates the sender's desire to receive a representation digest
+on messages associated with the request URI and representation metadata, using
+the `Representation-Digest` field.
+
+`Want-Content-Digest` indicates the sender's desire to receive a content digest
+on messages associated with the request URI and representation metadata, using
+the `Content-Digest` field.
+
+`Want-Representation-Digest` and `Want-Content-Digest` are Structured Fields
+Dictionary (see {{Section 3.2 of STRUCTURED-FIELDS}}) where:
+
+* keys convey the hashing algorithm (see {{algorithms}});
+* values MUST be of type `Integer` ({{Section 3.3.1 of STRUCTURED-FIELDS}})
+  in the range 0 to 10 inclusive.
+  1 is the least preferred, 10 is the most preferred,
+  and a value of 0 means "not acceptable".
+  Values convey an ascending, relative, weighted preference.
+
+~~~ abnf
+   Want-Representation-Digest = sf-dictionary
+   Want-Content-Digest = sf-dictionary
+~~~
+
+
+Examples:
+
+~~~ http-message
+Want-Representation-Digest: sha-256=1
+Want-Representation-Digest: sha-512=3, sha-256=10, unixsum=0
+Want-Content-Digest: sha-256=1
+Want-Content-Digest: sha-512=3, sha-256=10, unixsum=0
+~~~
+
+
+# Hash Algorithms for HTTP Digest Fields Registry {#algorithms}
+
+The "Hash Algorithms for HTTP Digest Fields", maintained by IANA at
+<https://www.iana.org/assignments/http-dig-alg/>, registers algorithms for use
+with the Integrity and Integrity preference fields defined in this document.
+
+This registry uses the Specification
+Required policy ({{Section 4.6 of !RFC8126}}).
+
+Registrations MUST include the following fields:
+
+ - Algorithm Key: the Structured Fields key value used in
+   `Representation-Digest`, `Content-Digest`, `Want-Representation-Digest` or
+    `Want-Content-Digest` field Dictionary member keys
+ - Status: the status of the algorithm.
+     Use "standard" for standardized algorithms without known problems;
+     "experimental" or some other appropriate value
+     - e.g. according to the type and status of the primary document
+     in which the algorithm is defined;
+     "insecure" when the algorithm is insecure;
+     "reserved" when the algorithm references a reserved token value
+ - Description: a short description of the algorithm
+ - Reference(s): a set of pointers to the primary documents defining the
+   algorithm and key
+
+Insecure hashing algorithms MAY be used to preserve integrity against corruption,
+but MUST NOT be used in a potentially adversarial setting;
+for example, when signing Integrity fields' values for authenticity.
+
+The entries in {{iana-hash-algorithm-table}} are registered by this document.
+
+| -------------- | -------- | ----------------------------------- | -------------- |
+| Algorithm Key  | Status   | Description                         | Reference(s)   |
+| -------------- | -------- | ----------------------------------- | --------- |
+| sha-512        | standard | The SHA-512 algorithm.              | [RFC6234], [RFC4648], this document. |
+| sha-256        | standard | The SHA-256 algorithm.              | [RFC6234], [RFC4648], this document. |
+| md5            | insecure | The MD5 algorithm. It is vulnerable to collision attacks; see {{NO-MD5}} and [CMU-836068] | [RFC1321], [RFC4648], this document. |
+| sha            | insecure | The SHA-1 algorithm. It is vulnerable to collision attacks; see {{NO-SHA}} and [IACR-2020-014] | [RFC3174], [RFC4648], [RFC6234] this document. |
+| unixsum        | insecure | The algorithm used by the UNIX "sum" command. | [RFC4648], [RFC6234], [UNIX], this document. |
+| unixcksum      | insecure | The algorithm used by the UNIX "cksum" command. | [RFC4648], [RFC6234], [UNIX], this document. |
+| adler          | insecure | The ADLER32 algorithm.                          | [RFC1950], this document. |
+| crc32c         | insecure | The CRC32c algorithm.                           | {{!RFC4960}} appendix B, this document. |
+| -------------- | -------- | ----------------------------------- | -------------- |
+{: #iana-hash-algorithm-table title="Initial Hash Algorithms"}
+
+
+
+# Security Considerations
+
+## HTTP Messages Are Not Protected In Full {#sec-limitations}
+
+This document specifies a data integrity mechanism that protects HTTP
+"representation data" or content, but not HTTP header and trailer fields, from
+certain kinds of corruption.
+
+Integrity fields are not intended to be a general protection against malicious tampering with
+HTTP messages. This can be achieved by combining it with other approaches such
+as transport-layer security or digital signatures.
+
+## End-to-End Integrity
+
+Integrity fields can help detect  "representation data" or content modification due to implementation errors,
+undesired "transforming proxies" (see {{Section 7.7 of SEMANTICS}})
+or other actions as the data passes across multiple hops or system boundaries.
+Even a simple mechanism for end-to-end  "representation data" integrity is valuable
+because a user agent can validate that resource retrieval succeeded before handing off to a
+HTML parser, video player etc. for parsing.
+
+Note that using these mechanisms alone does not provide end-to-end integrity of HTTP messages over
+multiple hops, since metadata could be manipulated at any stage. Methods to protect
+metadata are discussed in {{usage-in-signatures}}.
+
+## Usage in Signatures {#usage-in-signatures}
+
+Digital signatures are widely used together with checksums to provide the
+certain identification of the origin of a message [NIST800-32]. Such signatures
+can protect one or more HTTP fields and there are additional considerations when
+Integrity fields are included in this set.
+
+Digests explicitly
+depend on the "representation metadata" (e.g. the values of `Content-Type`,
+`Content-Encoding` etc). A signature that protects Integrity fields but not other
+"representation metadata" can expose the communication to tampering. For
+example, an actor could manipulate the `Content-Type` field-value and cause a
+digest validation failure at the recipient, preventing the application from
+accessing the representation. Such an attack consumes the resources of both
+endpoints. See also {{digest-and-content-location}}.
+
+Signatures are likely to be deemed an adversarial setting
+when applying Integrity fields; see {{algorithms}}.
+Using signatures to protect the checksum of an empty representation
+allows receiving endpoints to detect if an eventual payload has been stripped or added.
+
+Any mangling of Integrity fields, including digests' de-duplication
+or combining different field values (see {{Section 5.2 of SEMANTICS}})
+might affect signature validation.
+
+## Usage in Trailer Fields
+
+Before sending Integrity fields in a trailer section, the sender
+should consider that intermediaries are explicitly allowed to drop any trailer
+(see {{Section 6.5.2 of SEMANTICS}}).
+
+When Integrity fields are used in a trailer section, the field-values are received after the content.
+Eager processing of content before the trailer section prevents digest validation, possibly leading to
+processing of invalid data.
+
+Not every hashing algorithm is suitable for use in the trailer section, some may require to pre-process
+the whole payload before sending a message (e.g. see {{?I-D.thomson-http-mice}}).
+
+## Usage with Encryption
+
+The checksum of an encrypted payload can change between different messages
+depending on the encryption algorithm used; in those cases its value could not be used to provide
+a proof of integrity "at rest" unless the whole (e.g. encoded) content is persisted.
+
+## Algorithm Agility {#sec-agility}
+
+The security properties of hashing algorithms are not fixed.
+Algorithm Agility (see {{?RFC7696}}) is achieved by providing implementations with flexibility
+to choose hashing algorithms from the IANA Hash Algorithms for HTTP Digest Fields registry; see
+{{establish-hash-algorithm-registry}}.
+
+The "standard" algorithms listed in this document are suitable for many purposes,
+including adversarial situations where hash functions might need
+to provide resistance to collision, first-preimage and second-preimage attacks.
+Algorithms listed as "insecure" either provide none of these properties,
+or are known to be weak (see {{NO-MD5}} and {{NO-SHA}}).
+
+For adversarial situations, which of the "standard" algorithms are acceptable
+will depend on the level of protection the circumstances demand.
+As there is no negotiation, endpoints that depend on a digest for security
+will be vulnerable to attacks on the weakest algorithm they are willing to accept.
+
+Transition from weak algorithms is supported
+by negotiation of hashing algorithm using `Want-Representation-Digest` or `Want-Content-Digest` (see {{want-fields}})
+or by sending multiple digests from which the receiver chooses.
+Endpoints are advised that sending multiple values consumes resources,
+which may be wasted if the receiver ignores them (see {{representation-digest}}).
+
+While algorithm agility allows the migration to stronger algorithms
+it does not prevent the use of weaker algorithms.
+Integrity fields do not provide any mitigiations for downgrade or substitution
+attacks (see Section 1 of {{?RFC6211}}) of the hashing algorithm.
+To protect against such attacks, endpoints could restrict their set of supported algorithms
+to stronger ones and protect the fields value by using TLS and/or digital signatures.
+
+## Resource exhaustion
+
+Integrity fields validation consumes computational resources.
+In order to avoid resource exhaustion, implementations can restrict
+validation of the algorithm types, number of validations, or the size of content.
+
+# IANA Considerations
+
+## HTTP Field Name Registration
+
+IANA is asked to update the
+"Hypertext Transfer Protocol (HTTP) Field Name Registry" registry
+({{SEMANTICS}}) according to the table below:
+
+|--------------------------------|-----------|----------------------------------------------------------------|
+| Field Name                     | Status    |                     Reference                                  |
+|--------------------------------|-----------|----------------------------------------------------------------|
+| Representation-Digest          | permanent | {{representation-digest}} of this document                     |
+| Content-Digest                 | permanent | {{content-digest}} of this document                            |
+| Want-Representation-Digest     | permanent | {{want-fields}} of this document                               |
+| Want-Content-Digest            | permanent | {{want-fields}} of this document                               |
+| Digest                         | obsoleted | [RFC3230], {{obsolete-3230}} of this document                  |
+| Want-Digest                    | obsoleted | [RFC3230], {{obsolete-3230}} of this document                  |
+|--------------------------------|-----------|----------------------------------------------------------------|
+
+
+## Establish the Hash Algorithms for HTTP Digest Fields Registry {#establish-hash-algorithm-registry}
+
+This memo sets this specification to be the establishing document for the
+[Hash Algorithms for HTTP Digest Fields](https://www.iana.org/assignments/http-structured-dig-alg/)
+registry defined in {{algorithms}}.
+
+IANA is asked to initialize the registry with the entries in
+{{iana-hash-algorithm-table}}.
+
+
+--- back
+
+# Resource Representation and Representation Data {#resource-representation}
+
+The following examples show how representation metadata, payload transformations
+and method impacts on the message and content. When the content
+contains non-printable characters (e.g. when it is compressed) it is shown as
+a Base64-encoded string.
+
+~~~ http-message
+PUT /entries/1234 HTTP/1.1
+Host: foo.example
+Content-Type: application/json
+
+{"hello": "world"}
+~~~
+{: title="Request containing a JSON object without any content coding"}
+
+~~~ http-message
+PUT /entries/1234 HTTP/1.1
+Host: foo.example
+Content-Type: application/json
+Content-Encoding: gzip
+
+H4sIAItWyFwC/6tWSlSyUlAypANQqgUAREcqfG0AAAA=
+~~~
+{: title="Request containing a gzip-encoded JSON object"}
+
+Now the same content conveys a malformed JSON object, because the request does
+not indicate a content coding.
+
+~~~ http-message
+PUT /entries/1234 HTTP/1.1
+Host: foo.example
+Content-Type: application/json
+
+H4sIAItWyFwC/6tWSlSyUlAypANQqgUAREcqfG0AAAA=
+~~~
+{: title="Request containing malformed JSON"}
+
+A Range-Request alters the content, conveying a partial representation.
+
+~~~ http-message
+GET /entries/1234 HTTP/1.1
+Host: foo.example
+Range: bytes=1-7
+
+~~~
+{: title="Request for partial content"}
+
+~~~ http-message
+HTTP/1.1 206 Partial Content
+Content-Encoding: gzip
+Content-Type: application/json
+Content-Range: bytes 1-7/18
+
+iwgAla3RXA==
+~~~
+{: title="Partial response from a gzip-encoded representation"}
+
+The method can also alter the content.  For example, the response
+to a HEAD request does not carry content.
+
+~~~ http-message
+HEAD /entries/1234 HTTP/1.1
+Host: foo.example
+Accept: application/json
+Accept-Encoding: gzip
+
+~~~
+{: title="HEAD request"}
+
+~~~ http-message
+HTTP/1.1 200 OK
+Content-Type: application/json
+Content-Encoding: gzip
+
+~~~
+{: title="Response to HEAD request (empty content)"}
+
+Finally, the semantics of an HTTP response might decouple the effective request URI
+from the enclosed representation. In the example response below, the
+`Content-Location` header field indicates that the enclosed representation
+refers to the resource available at `/authors/123`, even though the request is
+directed to `/authors/`.
+
+~~~ http-message
+POST /authors/ HTTP/1.1
+Host: foo.example
+Accept: application/json
+Content-Type: application/json
+
+{"author": "Camilleri"}
+~~~
+{: title="POST request"}
+
+~~~ http-message
+HTTP/1.1 201 Created
+Content-Type: application/json
+Content-Location: /authors/123
+Location: /authors/123
+
+{"id": "123", "author": "Camilleri"}
+~~~
+{: title="Response with Content-Location header"}
 
 # Examples of Unsolicited Digest {#examples-unsolicited}
 
 The following examples demonstrate interactions where a server responds with a
-`Digest` field even though the client did not solicit one using
-`Want-Digest`.
+`Representation-Digest` or `Content-Digest` fields even though the client did not solicit one using
+`Want-Representation-Digest` or `Want-Content-Digest`.
 
 Some examples include JSON objects in the content.
 For presentation purposes, objects that fit completely within the line-length limits
@@ -564,63 +734,73 @@ are presented on a single line using compact notation with no leading space.
 Objects that would exceed line-length limits are presented across multiple lines
 (one line per key-value pair) with 2 spaced of leading indentation.
 
-`Digest` is media-type agnostic
-and does not provide canonicalization algorithms for specific formats.
-Examples of `Digest` are calculated inclusive of any space.
+Checksum mechanisms defined in this document are media-type agnostic
+and do not provide canonicalization algorithms for specific formats.
+Examples are calculated inclusive of any space.
+While examples can include both fields,
+`Representation-Digest` and `Content-Digest` can be returned independently.
 
 ## Server Returns Full Representation Data {#example-full-representation}
 
-Request:
+In this example, the message content conveys complete representation data.
+This means that in the response, `Representation-Digest` and `Content-Digest`
+are both computed over the JSON object `{"hello": "world"}`, and thus have the same value.
 
 ~~~ http-message
 GET /items/123 HTTP/1.1
 Host: foo.example
 
 ~~~
-
-Response:
+{: title="GET request for an item"}
 
 ~~~ http-message
+NOTE: '\' line wrapping per RFC 8792
+
 HTTP/1.1 200 OK
 Content-Type: application/json
-Digest: sha-256=X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=
+Representation-Digest: \
+  sha-256=:X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=:
+Content-Digest: \
+  sha-256=:X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=:
 
 {"hello": "world"}
 ~~~
+{: title="Response with identical Representation-Digest and Content-Digest"}
 
 ## Server Returns No Representation Data
 
 In this example, a HEAD request is used to retrieve the checksum
 of a resource.
 
-The response `Digest` field-value is calculated over the JSON object
+The response `Representation-Digest` field-value is calculated over the JSON object
 `{"hello": "world"}`, which is not shown because there is no payload
 data.
-
-Request:
+`Content-Digest` is computed on empty content.
 
 ~~~ http-message
 HEAD /items/123 HTTP/1.1
 Host: foo.example
 
 ~~~
-
-Response:
+{: title="HEAD request for an item"}
 
 ~~~ http-message
+NOTE: '\' line wrapping per RFC 8792
+
 HTTP/1.1 200 OK
 Content-Type: application/json
-Digest: sha-256=X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=
+Representation-Digest: \
+  sha-256=:X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=:
+Content-Digest: \
+  sha-256=:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=:
 
 ~~~
+{: title="Response with both Content-Digest and Digest; empty content"}
 
 ## Server Returns Partial Representation Data
 
-In this example, the client makes a range request and the server
-responds with partial content. The `Digest` field-value represents
-the entire JSON object `{"hello": "world"}`.
-
-Request:
+In this example, the client makes a range request and the server responds with
+partial content.
 
 ~~~ http-message
 GET /items/123 HTTP/1.1
@@ -628,199 +808,239 @@ Host: foo.example
 Range: bytes=1-7
 
 ~~~
-
-Response:
+{: title="Request for partial content"}
 
 ~~~ http-message
+NOTE: '\' line wrapping per RFC 8792
+
 HTTP/1.1 206 Partial Content
 Content-Type: application/json
 Content-Range: bytes 1-7/18
-Digest: sha-256=X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=
+Representation-Digest: \
+  sha-256=:X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=:
+Content-Digest: \
+  sha-256=:Wqdirjg/u3J688ejbUlApbjECpiUUtIwT8lY/z81Tno=:
 
 "hello"
 ~~~
+{: title="Partial response with both Content-Digest and Representation-Digest"}
 
+In the response message above, note that the
+`Representation-Digest` and `Content-Digests` are different.
+The `Representation-Digest` field-value is calculated across the entire JSON object
+`{"hello": "world"}`, and the field is
+
+~~~ http-message
+NOTE: '\' line wrapping per RFC 8792
+
+Representation-Digest: \
+  sha-256=:X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=:`
+~~~
+
+However, since the message content is constrained to bytes 1-7,
+the `Content-Digest` field-value is calculated over the
+byte sequence  `"hello"`, thus resulting in
+
+~~~ http-message
+NOTE: '\' line wrapping per RFC 8792
+
+Content-Digest: \
+  sha-256=:Wqdirjg/u3J688ejbUlApbjECpiUUtIwT8lY/z81Tno=:
+~~~
 
 ## Client and Server Provide Full Representation Data
 
-The request contains a `Digest` field-value calculated on the enclosed
+The request contains a `Representation-Digest` field-value calculated on the enclosed
 representation. It also includes an `Accept-Encoding: br` header field that advertises the
-client supports brotli encoding.
+client supports Brotli encoding.
 
 The response includes a `Content-Encoding: br` that indicates the selected
-representation is brotli encoded. The `Digest` field-value is therefore
+representation is Brotli-encoded. The `Representation-Digest` field-value is therefore
 different compared to the request.
 
-For presentation purposes, the response body is displayed as a base64-encoded string because it contains
+For presentation purposes, the response body is displayed as a Base64-encoded string because it contains
 non-printable characters.
 
-Request:
-
 ~~~ http-message
+NOTE: '\' line wrapping per RFC 8792
+
 PUT /items/123 HTTP/1.1
 Host: foo.example
 Content-Type: application/json
 Accept-Encoding: br
-Digest: sha-256=X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=
+Representation-Digest: \
+  sha-256=:X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=:
 
 {"hello": "world"}
 ~~~
-
-Response:
+{: title="PUT Request with Digest"}
 
 ~~~ http-message
-HTTP/1.1 200 Ok
+NOTE: '\' line wrapping per RFC 8792
+
+HTTP/1.1 200 OK
 Content-Type: application/json
 Content-Location: /items/123
 Content-Encoding: br
 Content-Length: 22
-Digest: sha-256=4REjxQ4yrqUVicfSKYNO/cF9zNj5ANbzgDZt3/h3Qxo=
+Representation-Digest: \
+  sha-256=:4REjxQ4yrqUVicfSKYNO/cF9zNj5ANbzgDZt3/h3Qxo=:
 
 iwiAeyJoZWxsbyI6ICJ3b3JsZCJ9Aw==
 ~~~
+{: title="Response with Digest of encoded response"}
 
 
 ## Client Provides Full Representation Data, Server Provides No Representation Data
 
-The request `Digest` field-value is calculated on the enclosed payload.
+The request `Representation-Digest` field-value is calculated on the enclosed payload.
 
-The response `Digest` field-value
+The response `Representation-Digest` field-value
 depends on the representation metadata header fields, including
 `Content-Encoding: br` even when the response does not contain content.
 
 
-Request:
-
 ~~~ http-message
+NOTE: '\' line wrapping per RFC 8792
+
 PUT /items/123 HTTP/1.1
 Host: foo.example
 Content-Type: application/json
 Content-Length: 18
 Accept-Encoding: br
-Digest: sha-256=X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=
+Representation-Digest: \
+  sha-256=:X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=:
 
 {"hello": "world"}
 ~~~
-
-Response:
+{: title="PUT Request with Digest}
 
 ~~~ http-message
+NOTE: '\' line wrapping per RFC 8792
+
 HTTP/1.1 204 No Content
 Content-Type: application/json
 Content-Encoding: br
-Digest: sha-256=4REjxQ4yrqUVicfSKYNO/cF9zNj5ANbzgDZt3/h3Qxo=
+Representation-Digest: \
+  sha-256=:4REjxQ4yrqUVicfSKYNO/cF9zNj5ANbzgDZt3/h3Qxo=:
 
 ~~~
+{: title="Empty response with Digest"}
 
-## Client and Server Provide Full Representation Data, Client Uses id-sha-256.
+## Client and Server Provide Full Representation Data
 
-The response contains two digest values:
-
-- one with no content coding applied, which in this case accidentally
-  matches the unencoded digest-value sent in the request;
-- one taking into account the `Content-Encoding`.
+The response contains two digest values using different algorithms.
 
 As the response body contains non-printable characters, it is displayed as a
 base64-encoded string.
 
-Request:
-
 ~~~ http-message
+NOTE: '\' line wrapping per RFC 8792
+
 PUT /items/123 HTTP/1.1
 Host: foo.example
 Content-Type: application/json
 Accept-Encoding: br
-Digest: sha-256=X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=
+Representation-Digest: \
+  sha-256=:X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=:
 
 {"hello": "world"}
 ~~~
-
-Response:
+{: title="PUT Request with Digest"}
 
 ~~~ http-message
+NOTE: '\' line wrapping per RFC 8792
+
 HTTP/1.1 200 OK
 Content-Type: application/json
 Content-Encoding: br
 Content-Location: /items/123
-Digest: sha-256=4REjxQ4yrqUVicfSKYNO/cF9zNj5ANbzgDZt3/h3Qxo=,
-        id-sha-256=X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=
+Representation-Digest: \
+  sha-256=:4REjxQ4yrqUVicfSKYNO/cF9zNj5ANbzgDZt3/h3Qxo=:,\
+  sha-512=:pxo7aYzcGI88pnDnoSmAnaOEVys0MABhgvHY9+VI+ElE60jBCwnMPyA/\
+  s3NF3ZO5oIWA7lf8ukk+5KJzm3p5og==:
 
 iwiAeyJoZWxsbyI6ICJ3b3JsZCJ9Aw==
 ~~~
-
+{: title="Response with Digest of Encoded Content"}
 
 ## POST Response does not Reference the Request URI {#post-not-request-uri}
 
-The request `Digest` field-value is computed on the enclosed representation (see
-{{acting-on-resources}}).
+The request `Representation-Digest` field-value is computed on the enclosed representation (see
+{{state-changing-requests}}).
 
 The representation enclosed in the response refers to the resource identified by
-`Content-Location` (see {{SEMANTICS}}, Section 6.4.2). `Digest` is thus computed on the enclosed representation.
-
-Request:
+`Content-Location` (see {{Section 6.4.2 of SEMANTICS}}). `Representation-Digest` is thus computed on the enclosed representation.
 
 ~~~ http-message
+NOTE: '\' line wrapping per RFC 8792
+
 POST /books HTTP/1.1
 Host: foo.example
 Content-Type: application/json
 Accept: application/json
 Accept-Encoding: identity
-Digest: sha-256=bWopGGNiZtbVgHsG+I4knzfEJpmmmQHf7RHDXA3o1hQ=
+Representation-Digest: \
+  sha-256=:bWopGGNiZtbVgHsG+I4knzfEJpmmmQHf7RHDXA3o1hQ=:
 
 {"title": "New Title"}
 ~~~
-
-
-Response:
+{: title="POST Request with Digest"}
 
 ~~~ http-message
+NOTE: '\' line wrapping per RFC 8792
+
 HTTP/1.1 201 Created
 Content-Type: application/json
 Content-Location: /books/123
 Location: /books/123
-Digest: id-sha-256=yxOAqEeoj+reqygSIsLpT0LhumrNkIds5uLKtmdLyYE=
+Representation-Digest: \
+  sha-256=:yxOAqEeoj+reqygSIsLpT0LhumrNkIds5uLKtmdLyYE=:
 
 {
   "id": "123",
   "title": "New Title"
 }
 ~~~
+{: title="Response with Digest of Resource"}
 
 Note that a `204 No Content` response without content but with the same
-`Digest` field-value would have been legitimate too.
+`Representation-Digest` field-value would have been legitimate too.
+In that case, `Content-Digest` would have been computed on an empty content.
 
-## POST Response Describes the Request Status {#post-referencing-action}
+## POST Response Describes the Request Status {#post-referencing-status}
 
-The request `Digest` field-value is computed on the enclosed representation (see
-{{acting-on-resources}}).
+The request `Representation-Digest` field-value is computed on the enclosed representation (see
+{{state-changing-requests}}).
 
 The representation enclosed in the response describes the status of the request,
-so `Digest` is computed on that enclosed representation.
+so `Representation-Digest` is computed on that enclosed representation.
 
-Response `Digest` has no explicit relation with the resource referenced by
+Response `Representation-Digest` has no explicit relation with the resource referenced by
 `Location`.
 
-Request:
-
 ~~~ http-message
+NOTE: '\' line wrapping per RFC 8792
+
 POST /books HTTP/1.1
 Host: foo.example
 Content-Type: application/json
 Accept: application/json
 Accept-Encoding: identity
-Digest: sha-256=bWopGGNiZtbVgHsG+I4knzfEJpmmmQHf7RHDXA3o1hQ=
-Location: /books/123
+Representation-Digest: \
+  sha-256=:bWopGGNiZtbVgHsG+I4knzfEJpmmmQHf7RHDXA3o1hQ=:
 
 {"title": "New Title"}
 ~~~
-
-
-Response:
+{: title="POST Request with Digest"}
 
 ~~~ http-message
+NOTE: '\' line wrapping per RFC 8792
+
 HTTP/1.1 201 Created
 Content-Type: application/json
-Digest: id-sha-256=2LBp5RKZGpsSNf8BPXlXrX4Td4Tf5R5bZ9z7kdi5VvY=
+Representation-Digest: \
+  sha-256=:2LBp5RKZGpsSNf8BPXlXrX4Td4Tf5R5bZ9z7kdi5VvY=:
 Location: /books/123
 
 {
@@ -830,6 +1050,8 @@ Location: /books/123
   "instance": "/books/123"
 }
 ~~~
+{: title="Response with Digest of Representation"}
+
 
 ## Digest with PATCH
 
@@ -839,71 +1061,64 @@ effective request URI.
 The PATCH request uses the `application/merge-patch+json` media type defined in
 {{?RFC7396}}.
 
-`Digest` is calculated on the enclosed payload, which corresponds to the patch
+`Representation-Digest` is calculated on the enclosed payload, which corresponds to the patch
 document.
 
-The response `Digest` field-value is computed on the complete representation of the patched
+The response `Representation-Digest` field-value is computed on the complete representation of the patched
 resource.
 
-Request:
-
 ~~~ http-message
+NOTE: '\' line wrapping per RFC 8792
+
 PATCH /books/123 HTTP/1.1
 Host: foo.example
 Content-Type: application/merge-patch+json
 Accept: application/json
 Accept-Encoding: identity
-Digest: sha-256=bWopGGNiZtbVgHsG+I4knzfEJpmmmQHf7RHDXA3o1hQ=
+Representation-Digest: \
+  sha-256=:bWopGGNiZtbVgHsG+I4knzfEJpmmmQHf7RHDXA3o1hQ=:
 
 {"title": "New Title"}
 ~~~
-
-Response:
+{: #fig-patch title="PATCH Request with Digest"}
 
 ~~~ http-message
+NOTE: '\' line wrapping per RFC 8792
+
 HTTP/1.1 200 OK
 Content-Type: application/json
-Digest: id-sha-256=yxOAqEeoj+reqygSIsLpT0LhumrNkIds5uLKtmdLyYE=
+Representation-Digest: \
+  sha-256=:yxOAqEeoj+reqygSIsLpT0LhumrNkIds5uLKtmdLyYE=:
 
 {
   "id": "123",
   "title": "New Title"
 }
 ~~~
+{: title="Response with Digest of Representation"}
 
 Note that a `204 No Content` response without content but with the same
-`Digest` field-value would have been legitimate too.
+`Representation-Digest` field-value would have been legitimate too.
 
 ## Error responses
 
-In error responses, the representation-data does not necessarily refer to the
+In error responses, the "representation data" does not necessarily refer to the
 target resource. Instead, it refers to the representation of the error.
 
-In the following example a client attempts to patch the resource located at
-/books/123. However, the resource does not exist and the server generates a 404
-response with a body that describes the error in accordance with {{?RFC7807}}.
+In the following example, a client sends the same request from {{fig-patch}} to
+patch the resource located at /books/123. However, the resource does not exist
+and the server generates a 404 response with a body that describes the error in
+accordance with {{?RFC7807}}.
 
-The response `Digest` field-value is computed on this enclosed representation.
-
-Request:
-
-~~~ http-message
-PATCH /books/123 HTTP/1.1
-Host: foo.example
-Content-Type: application/merge-patch+json
-Accept: application/json
-Accept-Encoding: identity
-Digest: sha-256=bWopGGNiZtbVgHsG+I4knzfEJpmmmQHf7RHDXA3o1hQ=
-
-{"title": "New Title"}
-~~~
-
-Response:
+The response `Representation-Digest` field-value is computed on this enclosed representation.
 
 ~~~ http-message
+NOTE: '\' line wrapping per RFC 8792
+
 HTTP/1.1 404 Not Found
 Content-Type: application/problem+json
-Digest: sha-256=KPqhVXAT25LLitV1w0O167unHmVQusu+fpxm65zAsvk=
+Representation-Digest: \
+  sha-256=:KPqhVXAT25LLitV1w0O167unHmVQusu+fpxm65zAsvk=:
 
 {
   "title": "Not Found",
@@ -911,25 +1126,25 @@ Digest: sha-256=KPqhVXAT25LLitV1w0O167unHmVQusu+fpxm65zAsvk=
   "status": 404
 }
 ~~~
+{: title="Response with Digest of Error Representation"}
 
 ## Use with Trailer Fields and Transfer Coding
 
-An origin server sends `Digest` as trailer field, so it can calculate digest-value
+An origin server sends `Representation-Digest` as trailer field, so it can calculate digest-value
 while streaming content and thus mitigate resource consumption.
-The `Digest` field-value is the same as in {{example-full-representation}} because `Digest` is designed to
+The `Representation-Digest` field-value is the same as in {{example-full-representation}} because `Representation-Digest` is designed to
 be independent from the use of one or more transfer codings (see {{representation-digest}}).
-
-Request:
 
 ~~~ http-message
 GET /items/123 HTTP/1.1
 Host: foo.example
 
 ~~~
-
-Response:
+{: title="GET Request"}
 
 ~~~ http-message
+NOTE: '\' line wrapping per RFC 8792
+
 HTTP/1.1 200 OK
 Content-Type: application/json
 Transfer-Encoding: chunked
@@ -942,15 +1157,18 @@ Trailer: Digest
 2\r\n
 "}\r\n
 0\r\n
-Digest: sha-256=X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=
+Representation-Digest: \
+  sha-256=:X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=:
 
 ~~~
+{: title="Chunked Response with Digest"}
 
 
-# Examples of Want-Digest Solicited Digest {#examples-solicited}
+# Examples of Want-Representation-Digest Solicited Digest {#examples-solicited}
 
 The following examples demonstrate interactions where a client solicits a
-`Digest` using `Want-Digest`.
+`Representation-Digest` using `Want-Representation-Digest`.
+The behavior of `Content-Digest` and `Want-Content-Digest` is identical.
 
 Some examples include JSON objects in the content.
 For presentation purposes, objects that fit completely within the line-length limits
@@ -958,574 +1176,114 @@ are presented on a single line using compact notation with no leading space.
 Objects that would exceed line-length limits are presented across multiple lines
 (one line per key-value pair) with 2 spaced of leading indentation.
 
-`Digest` is media-type agnostic
-and does not provide canonicalization algorithms for specific formats.
-Examples of `Digest` are calculated inclusive of any space.
+Checksum mechanisms described in this document are media-type agnostic
+and do not provide canonicalization algorithms for specific formats.
+Examples are calculated inclusive of any space.
 
 ## Server Selects Client's Least Preferred Algorithm
 
 The client requests a digest, preferring "sha". The server is free to reply with
 "sha-256" anyway.
 
-Request:
+~~~ http-message
+GET /items/123 HTTP/1.1
+Host: foo.example
+Want-Representation-Digest: sha-256=3, sha=10
+
+~~~
+{: title="GET Request with Want-Representation-Digest"}
+
+~~~ http-message
+NOTE: '\' line wrapping per RFC 8792
+
+HTTP/1.1 200 OK
+Content-Type: application/json
+Representation-Digest: \
+  sha-256=:X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=:
+
+{"hello": "world"}
+~~~
+{: title="Response with Different Algorithm"}
+
+##  Server Selects Algorithm Unsupported by Client {#ex-server-selects-unsupported-algorithm}
+
+The client requests a "sha" digest because that is the only algorithm it
+supports. The server is not obliged to produce a response containing a "sha"
+digest, it instead uses a different algorithm.
 
 ~~~ http-message
 GET /items/123 HTTP/1.1
 Host: foo.example
-Want-Digest: sha-256;q=0.3, sha;q=1
+Want-Representation-Digest: sha=10
 
 ~~~
-
-Response:
+{: title="GET Request with Want-Representation-Digest"}
 
 ~~~ http-message
+NOTE: '\' line wrapping per RFC 8792
+
 HTTP/1.1 200 OK
 Content-Type: application/json
-Digest: sha-256=X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=
+Representation-Digest: \
+  sha-512=:WZDPaVn/7XgHaAy8pmojAkGWoRx2UFChF41A2svX+TaPm+AbwAgBWnrI\
+  iYllu7BNNyealdVLvRwEmTHWXvJwew==:
 
 {"hello": "world"}
 ~~~
-
-##  Server Selects Algorithm Unsupported by Client
-
-The client requests a "sha" digest only. The server is currently free to reply
-with a Digest containing an unsupported algorithm.
-
-Request:
-
-~~~ http-message
-GET /items/123 HTTP/1.1
-Host: foo.example
-Want-Digest: sha;q=1
-
-~~~
-
-Response:
-
-~~~ http-message
-HTTP/1.1 200 OK
-Content-Type: application/json
-Digest: id-sha-512=WZDPaVn/7XgHaAy8pmojAkGWoRx2UFChF41A2svX+TaPm
-                   +AbwAgBWnrIiYllu7BNNyealdVLvRwE\nmTHWXvJwew==
-
-{"hello": "world"}
-~~~
+{: title="Response with Unsupported Algorithm"}
 
 ## Server Does Not Support Client Algorithm and Returns an Error
 
-The client requests a "sha" Digest, the server advises "sha-256" and "sha-512".
+{{ex-server-selects-unsupported-algorithm}} is an example where a server ignores
+the client's preferred digest algorithm. Alternatively a server can also reject
+the request and return an error.
 
-Request:
+In this example, the client requests a "sha" `Representation-Digest`, and the server returns an
+error with problem details {{?RFC7807}} contained in the content. The problem
+details contain a list of the hashing algorithms that the server supports. This
+is purely an example, this specification does not define any format or
+requirements for such content.
 
 ~~~ http-message
 GET /items/123 HTTP/1.1
 Host: foo.example
-Want-Digest: sha;q=1
+Want-Representation-Digest: sha=10
 
 ~~~
-
-Response:
+{: title="GET Request with Want-Representation-Digest"}
 
 ~~~ http-message
 HTTP/1.1 400 Bad Request
-Want-Digest: sha-256, sha-512
+Content-Type: application/problem+json
 
+{
+  "title": "Bad Request",
+  "detail": "Supported hashing algorithms: sha-256, sha-512",
+  "status": 400
+}
 ~~~
+{: title="Response advertising the supported algorithms"}
 
-
-# Security Considerations
-
-## Digest Does Not Protect the Full HTTP Message
-
-This document specifies a data integrity mechanism that protects HTTP
-`representation data`, but not HTTP `representation metadata` fields, from
-certain kinds of accidental corruption.
-
-`Digest` is not intended to be a general protection against malicious tampering with
-HTTP messages. This can be achieved by combining it with other approaches such
-as transport-layer security or digital signatures.
-
-## Broken Cryptographic Algorithms {#broken-algorithms}
-
-Cryptographic algorithms are intended to provide a proof of integrity suited
-towards cryptographic constructions such as signatures.
-
-However, these rely on collision-resistance for their security proofs
-[CMU-836068]. The "md5" and "sha" digest-algorithms are vulnerable to collisions attacks,
-so they MUST NOT be used with `Digest`.
-
-## Other Deprecated Algorithms {#deprecated-algorithms}
-
-The ADLER32 algorithm defined in [RFC1950] has been deprecated by [RFC3309]
-because, under certain conditions, it provides weak detection of errors. It is now
-NOT RECOMMENDED for use with `Digest`.
-
-## Digest for End-to-End Integrity
-
-`Digest` only covers the `representation data` and not the
-`representation metadata`. `Digest` could help protect the `representation data`
-from buggy manipulation, undesired "transforming proxies" (see Section 7.7 of {{SEMANTICS}})
-or other actions as the data passes across multiple hops or system boundaries.
-Even a simple mechanism for end-to-end `representation data` integrity is valuable
-because user-agent can validate that resource retrieval succeeded before handing off to a
-HTML parser, video player etc. for parsing.
-
-Identity digest-algorithms (e.g. "id-sha-256" and "id-sha-512") are particularly useful
-for end-to-end integrity because they allow piecing together a resource from different sources
-with different HTTP messaging characteristics. For example, different servers that
-apply different content codings.
-
-Note that using `Digest` alone does not provide end-to-end integrity of HTTP messages over
-multiple hops, since metadata could be manipulated at any stage. Methods to protect
-metadata are discussed in {{usage-in-signatures}}.
-
-## Digest and Content-Location in Responses {#digest-and-content-location}
-
-When a state-changing method returns the `Content-Location` header field, the
-enclosed representation refers to the resource identified by its value and
-`Digest` is computed accordingly.
-
-
-## Usage in Signatures {#usage-in-signatures}
-
-Digital signatures are widely used together with checksums to provide the
-certain identification of the origin of a message [NIST800-32]. Such signatures
-can protect one or more HTTP fields and there are additional considerations when
-`Digest` is included in this set.
-
-Since the `Digest` field is a hash of a resource representation, it explicitly
-depends on the `representation metadata` (eg. the values of `Content-Type`,
-`Content-Encoding` etc). A signature that protects `Digest` but not other
-`representation metadata` can expose the communication to tampering. For
-example, an actor could manipulate the `Content-Type` field-value and cause a
-digest validation failure at the recipient, preventing the application from
-accessing the representation. Such an attack consumes the resources of both
-endpoints. See also {{digest-and-content-location}}.
-
-`Digest` SHOULD always be used over a connection that provides integrity at
-the transport layer that protects HTTP fields.
-
-A `Digest` field using NOT RECOMMENDED digest-algorithms SHOULD NOT be used in
-signatures.
-
-Using signatures to protect the `Digest` of an empty representation
-allows receiving endpoints to detect if an eventual payload has been stripped or added.
-
-Any mangling of `Digest`, including de-duplication of representation-data-digest values
-or combining different field values (see Section 5.2 of {{SEMANTICS}})
-might affect signature validation.
-
-## Usage in Trailer Fields
-
-When `Digest` is used in trailer fields, the receiver gets the digest value after the content
-and may thus be tempted to process the data before validating the digest value.
-It is prefereable that data is only be processed after validating the Digest.
-
-If received in trailers, `Digest` MUST NOT be discarded;
-instead, it MAY be merged in the header section (See Section 6.5.1 of {{SEMANTICS}}).
-
-Not every digest-algorithm is suitable for use in the trailer section, some may require to pre-process
-the whole payload before sending a message (eg. see {{?I-D.thomson-http-mice}}).
-
-## Usage with Encryption
-
-`Digest` may expose details of encrypted payload when the checksum
-is computed on the unencrypted data.
-For example, the use of the "id-sha-256" digest-algorithm
-in conjunction with the encrypted content-coding {{?RFC8188}}.
-
-The representation-data-digest of an encrypted payload can change between different messages
-depending on the encryption algorithm used; in those cases its value could not be used to provide
-a proof of integrity "at rest" unless the whole (e.g. encoded) content is persisted.
-
-## Algorithm Agility
-
-The security properties of digest-algorithms are not fixed.
-Algorithm Agility (see {{?RFC7696}}) is achieved by providing implementations with flexibility
-choose digest-algorithms from the IANA Digest Algorithm Values registry in
-{{iana-digest-algorithm-registry}}.
-
-To help endpoints understand weaker algorithms from stronger ones,
-this document adds to the IANA Digest Algorithm Values registry
-a new "Status" field containing the most-recent appraisal of the digest-algorithm;
-the allowed values are specified in {{iana-digest-algorithm-status}}.
-
-An endpoint might have a preference for algorithms,
-such as preferring "standard" algorithms over "deprecated" ones.
-Transition from weak algorithms is supported
-by negotiation of digest-algorithm using `Want-Digest` (see {{want-digest}})
-or by sending multiple representation-data-digest values from which the receiver chooses.
-Endpoints are advised that sending multiple values consumes resources,
-which may be wasted if the receiver ignores them (see {{digest}}).
-
-### Duplicate digest-algorithm in field value
-
-An endpoint might receive multiple representation-data-digest values (see {{digest}}) that use the same digest-algorithm with different or identical digest-values. For example:
-
-~~~ example
-Digest: sha-256=X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=,
-        sha-256=47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=
-~~~
-
-A receiver is permitted to ignore any representation-data-digest value,
-so validation of duplicates is left as an implementation decision.
-Endpoints might select all, some or none of the values for checksum comparison and,
-based on the intersection of those results, conditionally pass or fail digest validation.
-
-## Resource exhaustion
-
-`Digest` validation consumes computational resources.
-In order to avoid resource exhaustion, implementations can restrict
-validation of the algorithm types, number of validations, or the size of content.
-
-# IANA Considerations
-
-## Establish the HTTP Digest Algorithm Values Registry {#iana-digest-algorithm-registry}
-
-This memo sets this specification to be the establishing document for the [HTTP Digest
-Algorithm
-Values](https://www.iana.org/assignments/http-dig-alg/http-dig-alg.xhtml) registry.
-
-## The "status" Field in the HTTP Digest Algorithm Values Registry {#iana-digest-algorithm-status}
-
-This memo adds the field "Status" to the [HTTP Digest Algorithm
-Values](https://www.iana.org/assignments/http-dig-alg/http-dig-alg.xhtml)
-registry. The allowed values for the "Status" fields are described below.
-
-  {: vspace="0"}
-   Status
-   :  * "standard" for standardized algorithms without known problems;
-      * "experimental", "obsoleted" or some other appropriate value - e.g. according to the type
-      and status of the primary document in which the algorithm is defined;
-      * "deprecated" when the algorithm is insecure or otherwise undesirable.
-
-## Deprecate "MD5" Digest Algorithm {#iana-md5}
-
-This memo updates the "MD5" digest-algorithm in the [HTTP Digest Algorithm
-Values](https://www.iana.org/assignments/http-dig-alg/http-dig-alg.xhtml)
-registry:
-
-* Digest Algorithm: md5
-* Description: As specified in {{algorithms}}.
-* Status: As specified in {{algorithms}}.
-
-## Update "UNIXsum" Digest Algorithm {#iana-unixsum}
-
-This memo updates the "UNIXsum" digest-algorithm in the [HTTP Digest Algorithm
-Values](https://www.iana.org/assignments/http-dig-alg/http-dig-alg.xhtml)
-registry:
-
-* Digest Algorithm: As specified in {{algorithms}}.
-* Description: As specified in {{algorithms}}.
-* Status: As specified in {{algorithms}}.
-
-## Update "UNIXcksum" Digest Algorithm {#iana-unixcksum}
-
-This memo updates the "UNIXcksum" digest-algorithm in the [HTTP Digest Algorithm
-Values](https://www.iana.org/assignments/http-dig-alg/http-dig-alg.xhtml)
-registry:
-
-* Digest Algorithm: As specified in {{algorithms}}.
-* Description: As specified in {{algorithms}}.
-* Status: As specified in {{algorithms}}.
-
-## Update "CRC32c" Digest Algorithm {#iana-crc32c}
-
-This memo updates the "CRC32c" digest-algorithm in the [HTTP Digest Algorithm
-Values](https://www.iana.org/assignments/http-dig-alg/http-dig-alg.xhtml)
-registry:
-
-* Digest Algorithm: crc32c
-* Description: The CRC32c algorithm is a 32-bit cyclic redundancy check. It
-  achieves a better hamming distance (for better error-detection performance)
-  than many other 32-bit CRC functions. Other places it is used include iSCSI
-  and SCTP. The 32-bit output is encoded in hexadecimal (using between 1 and 8
-  ASCII characters from 0-9, A-F, and a-f; leading 0's are allowed). For
-  example, crc32c=0a72a4df and crc32c=A72A4DF are both valid checksums for the
-  3-byte message "dog".
-* Reference: {{!RFC4960}} appendix B, this document.
-* Status: standard.
-
-## Deprecate "SHA" Digest Algorithm {#iana-sha}
-
-This memo updates the "SHA" digest-algorithm in the [HTTP Digest Algorithm
-Values](https://www.iana.org/assignments/http-dig-alg/http-dig-alg.xhtml)
-registry:
-
-* Digest Algorithm: sha
-* Description: As specified in {{algorithms}}.
-* Status: As specified in {{algorithms}}.
-
-## Obsolete "ADLER32" Digest Algorithm {#iana-adler-32}
-
-This memo updates the "ADLER32" digest-algorithm in the [HTTP Digest Algorithm
-Values](https://www.iana.org/assignments/http-dig-alg/http-dig-alg.xhtml)
-registry:
-
-* Digest Algorithm: adler32
-* Description: The ADLER32 algorithm is a checksum specified in [RFC1950] "ZLIB
-  Compressed Data Format". The 32-bit output is encoded in hexadecimal (using
-  between 1 and 8 ASCII characters from 0-9, A-F, and a-f; leading 0's are
-  allowed). For example, adler32=03da0195 and adler32=3DA0195 are both valid
-  checksums for the 4-byte message "Wiki". This algorithm is obsoleted and
-  SHOULD NOT be used.
-* Status: obsoleted
-
-## Obsolete "contentMD5" token in Digest Algorithm {#iana-contentMD5}
-
-This memo adds the "contentMD5" token in the [HTTP Digest Algorithm
-Values](https://www.iana.org/assignments/http-dig-alg/http-dig-alg.xhtml)
-registry:
-
-* Digest Algorithm: contentMD5
-* Description: Section 5 of [RFC3230] defined the "contentMD5" token to be used only in Want-Digest.
-  This token is obsoleted and MUST NOT be used.
-* Reference: {{iana-contentMD5}} of this document, Section 5 of [RFC3230].
-* Status: obsoleted
-
-
-## The "id-sha-256" Digest Algorithm {#iana-id-sha-256}
-
-This memo registers the "id-sha-256" digest-algorithm in the [HTTP Digest
-Algorithm
-Values](https://www.iana.org/assignments/http-dig-alg/http-dig-alg.xhtml)
-registry:
-
-* Digest Algorithm: id-sha-256
-* Description: As specified in {{algorithms}}.
-* Status: As specified in {{algorithms}}.
-
-## The "id-sha-512" Digest Algorithm {#iana-id-sha-512}
-
-This memo registers the "id-sha-512" digest-algorithm in the [HTTP Digest
-Algorithm
-Values](https://www.iana.org/assignments/http-dig-alg/http-dig-alg.xhtml)
-registry:
-
-* Digest Algorithm: id-sha-512
-* Description: As specified in {{algorithms}}.
-* Status: As specified in {{algorithms}}.
-
-## Changes Compared to RFC5843
-
-The digest-algorithm values for "MD5", "SHA", "SHA-256", "SHA-512", "UNIXcksum", "UNIXsum",
-"ADLER32" and "CRC32c" have been updated to lowercase.
-
-The status of "MD5" has been updated to "deprecated", and its description states
-that this algorithm MUST NOT be used.
-
-The status of "SHA" has been updated to "deprecated", and its description states
-that this algorithm MUST NOT be used.
-
-The status for "CRC2c", "UNIXsum" and "UNIXcksum" has been updated to "standard".
-
-The "id-sha-256" and "id-sha-512" algorithms have been added to the registry.
-
-## Want-Digest Field Registration
-
-This section registers the `Want-Digest` field in the "Hypertext Transfer
-Protocol (HTTP) Field Name Registry" {{SEMANTICS}}.
-
-Field name:  `Want-Digest`
-
-Status:  permanent
-
-Specification document(s):  {{want-digest}} of this document
-
-## Digest Field Registration
-
-This section registers the `Digest` field in the "Hypertext Transfer Protocol
-(HTTP) Field Name Registry" {{SEMANTICS}}.
-
-Field name:  `Digest`
-
-Status:  permanent
-
-Specification document(s):  {{digest}} of this document
-
---- back
-
-# Resource Representation and Representation-Data {#resource-representation}
-
-The following examples show how representation metadata, payload transformations
-and method impacts on the message and content. When the content
-contains non-printable characters (eg. when it is compressed) it is shown as
-base64-encoded string.
-
-A request with a JSON object without any content coding.
-
-Request:
-
-~~~ http-message
-PUT /entries/1234 HTTP/1.1
-Host: foo.example
-Content-Type: application/json
-
-{"hello": "world"}
-~~~
-
-Here is a gzip-compressed JSON object
-using a content coding.
-
-Request:
-
-~~~ http-message
-PUT /entries/1234 HTTP/1.1
-Host: foo.example
-Content-Type: application/json
-Content-Encoding: gzip
-
-H4sIAItWyFwC/6tWSlSyUlAypANQqgUAREcqfG0AAAA=
-~~~
-
-Now the same content conveys a malformed JSON object.
-
-Request:
-
-~~~ http-message
-PUT /entries/1234 HTTP/1.1
-Host: foo.example
-Content-Type: application/json
-
-H4sIAItWyFwC/6tWSlSyUlAypANQqgUAREcqfG0AAAA=
-~~~
-
-A Range-Request alters the content, conveying a partial representation.
-
-Request:
-
-~~~ http-message
-GET /entries/1234 HTTP/1.1
-Host: foo.example
-Range: bytes=1-7
-
-~~~
-
-Response:
-
-~~~ http-message
-HTTP/1.1 206 Partial Content
-Content-Encoding: gzip
-Content-Type: application/json
-Content-Range: bytes 1-7/18
-
-iwgAla3RXA==
-~~~
-
-
-Now the method too alters the content.
-
-Request:
-
-~~~ http-message
-HEAD /entries/1234 HTTP/1.1
-Host: foo.example
-Accept: application/json
-Accept-Encoding: gzip
-
-~~~
-
-Response:
-
-~~~ http-message
-HTTP/1.1 200 OK
-Content-Type: application/json
-Content-Encoding: gzip
-
-~~~
-
-Finally the semantics of an HTTP response might decouple the effective request URI
-from the enclosed representation. In the example response below, the
-`Content-Location` header field indicates that the enclosed representation
-refers to the resource available at `/authors/123`.
-
-Request:
-
-~~~ http-message
-POST /authors/ HTTP/1.1
-Host: foo.example
-Accept: application/json
-Content-Type: application/json
-
-{"author": "Camilleri"}
-~~~
-
-Response:
-
-~~~ http-message
-HTTP/1.1 201 Created
-Content-Type: application/json
-Content-Location: /authors/123
-Location: /authors/123
-
-{"id": "123", "author": "Camilleri"}
-~~~
-
-
-# FAQ
-
-1. Why remove all references to content-md5?
-
-   Those were unnecessary to understanding and using this specification.
-
-2. Why remove references to instance manipulation?
-
-   Those were unnecessary for correctly using and applying the specification. An example
-   with Range Request is more than enough. This document uses the term "partial
-   representation" which should group all those cases.
-
-3. How to use `Digest` with `PATCH` method?
-
-   See {{acting-on-resources}}.
-
-4. Why remove references to delta-encoding?
-
-   Unnecessary for a correct implementation of this specification. The revised specification can
-   be nicely adapted to "delta encoding", but all the references here to delta
-   encoding don't add anything to this RFC. Another job would be to refresh
-   delta encoding.
-
-5. Why remove references to Digest Authentication?
-
-   This specification seems to me completely unrelated to Digest Authentication but for
-   the word "Digest".
-
-6. What changes in `Want-Digest`?
-
-   The contentMD5 token defined in Section 5 of [RFC3230] is deprecated by {{deprecate-contentMD5}}.
-
-   To clarify that `Digest` and `Want-Digest` can be used in both requests and responses
-   - [RFC3230] carefully uses `sender` and `receiver` in their definition -
-   we added examples on using `Want-Digest` in responses to advertise the supported
-   digest-algorithms and the inability to accept requests with unsupported
-   digest-algorithms.
-
-7. Does this specification change supported algorithms?
-
-   Yes. This RFC updates [RFC5843] which is still delegated for all algorithms
-   updates, and adds two more algorithms: "id-sha-256" and "id-sha-512" which allows
-   to send a checksum of a resource representation with no content codings
-   applied.
-   To simplify a future transition to Structured Fields {{?I-D.ietf-httpbis-header-structure}}
-   we suggest to use lowercase for digest-algorithms.
-
-8. What about mid-stream trailer fields?
-
-   While
-   [mid-stream trailer fields](https://github.com/httpwg/http-core/issues/313#issuecomment-584389706)
-   are interesting, since this specification is a rewrite of [RFC3230] we do not
-   think we should face that. As a first thought, nothing in this document
-   precludes future work that would find a use for mid-stream trailers, for
-   example an incremental digest-algorithm. A document defining such a
-   digest-algorithm is best positioned to describe how it is used.
 
 # Acknowledgements
 {:numbered="false"}
-The vast majority of this document is inherited from [RFC3230], so thanks
+This document is based on ideas from [RFC3230], so thanks
 to J. Mogul and A. Van Hoff for their great work.
-The original idea of refreshing this document arose from an interesting
+The original idea of refreshing RFC3230 arose from an interesting
 discussion with M. Nottingham, J. Yasskin and M. Thomson when reviewing
 the MICE content coding.
+
+Thanks to Julian Reschke for his valuable contributions to this document,
+and to the following contributors that have helped improve this specification by reporting bugs,
+asking smart questions, drafting or reviewing text, and evaluating open issues:
+Mike Bishop,
+Brian Campbell,
+Matthew Kerwin,
+James Manger,
+Tommy Pauly,
+Sean Turner,
+Justin Richer,
+and Erik Wilde.
 
 
 # Code Samples
@@ -1533,7 +1291,7 @@ the MICE content coding.
 
 _RFC Editor: Please remove this section before publication._
 
-How can I generate and validate the `Digest` values shown in the examples
+How can I generate and validate the `Representation-Digest` values shown in the examples
 throughout this document?
 
 The following python3 code can be used to generate digests for JSON objects
@@ -1550,12 +1308,10 @@ def encode_item(item, encoding=lambda x: x):
     json_bytes = json.dumps(item, indent=indent).encode()
     return encoding(json_bytes)
 
-
 def digest_bytes(bytes_, algorithm=hashlib.sha256):
     checksum_bytes = algorithm(bytes_).digest()
     log.warning("Log bytes: \n[%r]", bytes_)
     return base64.encodebytes(checksum_bytes).strip()
-
 
 def digest(item, encoding=lambda x: x, algorithm=hashlib.sha256):
     content_encoded = encode_item(item, encoding)
@@ -1564,27 +1320,44 @@ def digest(item, encoding=lambda x: x, algorithm=hashlib.sha256):
 
 item = {"hello": "world"}
 
-print("Encoding | digest-algorithm | digest-value")
+print("Encoding | hashing algorithm | digest-value")
 print("Identity | sha256 |", digest(item))
-# Encoding | digest-algorithm | digest-value
+# Encoding | hashing algorithm | digest-value
 # Identity | sha256 | X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=
 
-print("Encoding | digest-algorithm | digest-value")
+print("Encoding | hashing algorithm | digest-value")
 print("Brotli | sha256 |", digest(item, encoding=brotli.compress))
-# Encoding | digest-algorithm | digest-value
+# Encoding | hashing algorithm | digest-value
 # Brotli | sha256 | 4REjxQ4yrqUVicfSKYNO/cF9zNj5ANbzgDZt3/h3Qxo=
 
-print("Encoding | digest-algorithm | digest-value")
+print("Encoding | hashing algorithm | digest-value")
 print("Identity | sha512 |", digest(item, algorithm=hashlib.sha512))
-# Encoding | digest-algorithm | digest-value
-# Identity | sha512 | b'WZDPaVn/7XgHaAy8pmojAkGWoRx2UFChF41A2svX+TaPm'
-#                      '+AbwAgBWnrIiYllu7BNNyealdVLvRwE\nmTHWXvJwew=='
+print("Brotli | sha512 |", digest(item, algorithm=hashlib.sha512,
+                                    encoding=brotli.compress))
+# Encoding | hashing algorithm | digest-value
+# Identity | sha512 |b'WZDPaVn/7XgHaAy8pmojAkGWoRx2UFChF41A2svX+TaPm'
+#                     '+AbwAgBWnrIiYllu7BNNyealdVLvRwEmTHWXvJwew=='
+# Brotli | sha512 | b'pxo7aYzcGI88pnDnoSmAnaOEVys0MABhgvHY9+VI+ElE6'
+#                   '0jBCwnMPyA/s3NF3ZO5oIWA7lf8ukk+5KJzm3p5og=='
+
 ~~~
 
 # Changes
 {:numbered="false"}
 
 _RFC Editor: Please remove this section before publication._
+
+## Since draft-ietf-httpbis-digest-headers-06
+{:numbered="false"}
+
+* Remove id-sha-256 and id-sha-512 from the list of supported algorithms #855
+
+## Since draft-ietf-httpbis-digest-headers-05
+{:numbered="false"}
+
+* Reboot digest-algorithm values registry #1567
+* Add Content-Digest #1542
+* Remove SRI section #1478
 
 ## Since draft-ietf-httpbis-digest-headers-04
 {:numbered="false"}
